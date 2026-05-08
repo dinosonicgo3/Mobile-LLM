@@ -1,10 +1,10 @@
-# Oracle AI Rescue
+# 甲骨文雲端AI
 
 這是一個手機端 Android 救援 App 專案。它不需要 Oracle Cloud 上的 AI 正常運作；手機 App 會直接呼叫外部 LLM API，並透過 SSH 連到 Oracle Cloud 讀取 log、診斷問題、產生修復建議、讀取/修改檔案。
 
 ## 版本
 
-v1.3.1 Java 原生版。
+v1.3.2 Java 原生版。此版將 App 顯示名稱改為「甲骨文雲端AI」，並加入自訂啟動圖示。
 
 此版改成 Java + 原生 Android UI，移除 Kotlin/Compose，目標是降低 GitHub Actions 編譯失敗機率。
 
@@ -113,7 +113,7 @@ Actions → Build Release APK → Run workflow
 填 tag，例如：
 
 ```text
-v1.3.1
+v1.3.2
 ```
 
 它會建立 GitHub Release 並附上 APK。之後 App 的「更新」頁可以列出 Releases。

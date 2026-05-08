@@ -6,7 +6,7 @@ on:
       tag:
         description: 'Release tag，例如 v1.3.0'
         required: true
-        default: 'v1.3.0'
+        default: 'v1.3.2'
 
 permissions:
   contents: write
@@ -44,13 +44,13 @@ jobs:
       - name: Rename APK
         run: |
           mkdir -p release
-          cp app/build/outputs/apk/debug/*.apk release/OracleAIRescue-${{ github.event.inputs.tag }}-debug.apk
+          cp app/build/outputs/apk/debug/*.apk release/OracleCloudAI-${{ github.event.inputs.tag }}-debug.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag }}
-          name: OracleAIRescue ${{ github.event.inputs.tag }}
+          name: 甲骨文雲端AI ${{ github.event.inputs.tag }}
           body: |
             Android debug APK。若新版有問題，可回到 Releases 下載舊 tag 的 APK 重新安裝，作為救援回滾。
           files: release/*.apk
