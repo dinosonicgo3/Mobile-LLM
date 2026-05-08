@@ -1,0 +1,56 @@
+name: Build Release APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag，例如 v1.3.0'
+        required: true
+        default: 'v1.3.0'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish APK release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/debug/*.apk release/OracleAIRescue-${{ github.event.inputs.tag }}-debug.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: OracleAIRescue ${{ github.event.inputs.tag }}
+          body: |
+            Android debug APK。若新版有問題，可回到 Releases 下載舊 tag 的 APK 重新安裝，作為救援回滾。
+          files: release/*.apk
