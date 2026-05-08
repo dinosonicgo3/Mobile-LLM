@@ -1,1 +1,2 @@
-# Debug-first personal rescue tool. Add rules here if you later enable minification.
+-keep class com.jcraft.jsch.** { *; }
+-dontwarn com.jcraft.jsch.**
