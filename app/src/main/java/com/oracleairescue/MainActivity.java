@@ -388,7 +388,7 @@ public class MainActivity extends Activity {
         EditText port = edit("SSH Port", false); port.setInputType(InputType.TYPE_CLASS_NUMBER); port.setText(String.valueOf(serverSettings.port)); box.addView(port);
         EditText username = edit("使用者，例如 ubuntu/opc", false); username.setText(serverSettings.username); box.addView(username);
         EditText password = edit("密碼，可留空，建議用私鑰", false); password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD); password.setText(serverSettings.password); box.addView(password);
-        EditText privateKey = edit("SSH 私鑰內容，包含 BEGIN OPENSSH PRIVATE KEY", true); privateKey.setMinLines(5); privateKey.setText(serverSettings.privateKey); box.addView(privateKey);
+        EditText privateKey = edit("SSH 私鑰內容，包含 BEGIN RSA PRIVATE KEY 或 BEGIN OPENSSH PRIVATE KEY", true); privateKey.setMinLines(5); privateKey.setText(serverSettings.privateKey); box.addView(privateKey);
         EditText passphrase = edit("私鑰密碼，可留空", false); passphrase.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD); passphrase.setText(serverSettings.privateKeyPassphrase); box.addView(passphrase);
         EditText projectPath = edit("專案路徑，例如 /home/ubuntu/my-ai", false); projectPath.setText(serverSettings.projectPath); box.addView(projectPath);
         EditText serviceName = edit("systemd 服務名，例如 my-ai.service", false); serviceName.setText(serverSettings.serviceName); box.addView(serviceName);
@@ -417,7 +417,13 @@ public class MainActivity extends Activity {
             CommandResult r = new SshClient(serverSettings).testConnection();
             ui.post(() -> showTextDialog("SSH 測試結果", r.asText()));
         });});
+        Button smartTest = button("智慧診斷 SSH");
+        smartTest.setOnClickListener(v -> { save.performClick(); runTask("正在智慧診斷 SSH…", () -> {
+            String r = new SshClient(serverSettings).testConnectionDetailed();
+            ui.post(() -> showTextDialog("SSH 智慧診斷結果", r));
+        });});
         row.addView(save, weight()); row.addView(test, weight()); box.addView(row);
+        box.addView(smartTest);
     }
 
     private void showRepairPage() {

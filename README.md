@@ -4,7 +4,7 @@
 
 ## 版本
 
-v1.3.0 Java 原生版。
+v1.3.1 Java 原生版。
 
 此版改成 Java + 原生 Android UI，移除 Kotlin/Compose，目標是降低 GitHub Actions 編譯失敗機率。
 
@@ -113,7 +113,7 @@ Actions → Build Release APK → Run workflow
 填 tag，例如：
 
 ```text
-v1.3.0
+v1.3.1
 ```
 
 它會建立 GitHub Release 並附上 APK。之後 App 的「更新」頁可以列出 Releases。
