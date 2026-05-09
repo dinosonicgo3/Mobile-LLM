@@ -128,7 +128,81 @@ class LlmClient {
                 String c = arr.optString(i);
                 if (c.trim().length() > 0 && !RepairSafety.isDangerous(c)) cfg.extraDiagnosticCommands.add(c);
             }
+
+            JSONObject kaggle = root.optJSONObject("kaggle");
+            if (kaggle != null) {
+                cfg.kaggleBaseUrl = kaggle.optString("baseUrl", kaggle.optString("apiBaseUrl", kaggle.optString("url", ""))).trim();
+                cfg.kaggleApiKey = kaggle.optString("apiKey", "").trim();
+                cfg.kaggleDefaultModel = kaggle.optString("defaultModel", kaggle.optString("model", cfg.kaggleDefaultModel)).trim();
+                JSONArray models = kaggle.optJSONArray("models");
+                if (models != null) for (int i = 0; i < models.length(); i++) {
+                    String m = models.optString(i).trim();
+                    if (m.length() > 0) cfg.kaggleModels.add(m);
+                }
+                cfg.kaggleState = kaggle.optString("state", kaggle.optString("status", cfg.kaggleState));
+                cfg.kaggleLastHeartbeatUtc8 = kaggle.optString("lastHeartbeatUtc8", kaggle.optString("lastHeartbeat", ""));
+                cfg.kaggleStartedAtUtc8 = kaggle.optString("startedAtUtc8", kaggle.optString("startedAt", ""));
+                cfg.kaggleStoppedAtUtc8 = kaggle.optString("stoppedAtUtc8", kaggle.optString("stoppedAt", ""));
+                cfg.kaggleMessage = kaggle.optString("message", "");
+                cfg.kaggleIdleShutdownMinutes = kaggle.optInt("idleShutdownMinutes", kaggle.optInt("idleMinutes", cfg.kaggleIdleShutdownMinutes));
+                cfg.kaggleWeeklyQuotaHours = kaggle.optInt("weeklyQuotaHours", cfg.kaggleWeeklyQuotaHours);
+                cfg.kaggleEstimatedUsedMinutes = kaggle.optInt("estimatedUsedMinutes", cfg.kaggleEstimatedUsedMinutes);
+                cfg.kaggleEstimatedRemainingMinutes = kaggle.optInt("estimatedRemainingMinutes", cfg.kaggleEstimatedRemainingMinutes);
+                cfg.kaggleWeekResetAtUtc8 = kaggle.optString("weekResetAtUtc8", "");
+            }
+            String flatBase = root.optString("kaggleBaseUrl", root.optString("kaggleApiBaseUrl", "")).trim();
+            if (cfg.kaggleBaseUrl.length() == 0 && flatBase.length() > 0) cfg.kaggleBaseUrl = flatBase;
+            String flatKey = root.optString("kaggleApiKey", "").trim();
+            if (cfg.kaggleApiKey.length() == 0 && flatKey.length() > 0) cfg.kaggleApiKey = flatKey;
+            String flatModel = root.optString("kaggleDefaultModel", root.optString("kaggleModel", "")).trim();
+            if (flatModel.length() > 0) cfg.kaggleDefaultModel = flatModel;
+            JSONArray flatModels = root.optJSONArray("kaggleModels");
+            if (flatModels != null) for (int i = 0; i < flatModels.length(); i++) {
+                String m = flatModels.optString(i).trim();
+                if (m.length() > 0) cfg.kaggleModels.add(m);
+            }
+            if (cfg.kaggleModels.isEmpty()) {
+                cfg.kaggleModels.add("Qwen/Qwen3.6-27B");
+                cfg.kaggleModels.add("Qwen/Qwen3.6-35B");
+                cfg.kaggleModels.add("qwen3.6-27b");
+                cfg.kaggleModels.add("qwen3.6-35b");
+            }
+            if (cfg.kaggleDefaultModel == null || cfg.kaggleDefaultModel.trim().isEmpty()) cfg.kaggleDefaultModel = cfg.kaggleModels.get(0);
             return cfg;
+        }
+    }
+
+
+    void dispatchWorkflow(UpdateSettings u, String workflowFile, JSONObject inputs) throws Exception {
+        if (u.owner.trim().isEmpty() || u.repo.trim().isEmpty()) throw new IllegalArgumentException("請先填 GitHub owner/repo。");
+        if (u.githubToken.trim().isEmpty()) throw new IllegalArgumentException("請先在 Kaggle 頁填入 GitHub Fine-grained Token。權限只需要此 repo 的 Actions: Read and write。");
+        String wf = (workflowFile == null || workflowFile.trim().isEmpty()) ? "start-kaggle-qwen.yml" : workflowFile.trim();
+        JSONObject payload = new JSONObject().put("ref", u.branch.trim().isEmpty() ? "main" : u.branch.trim());
+        if (inputs != null) payload.put("inputs", inputs);
+        String url = "https://api.github.com/repos/" + u.owner.trim() + "/" + u.repo.trim() + "/actions/workflows/" + wf + "/dispatches";
+        Request request = new Request.Builder()
+            .url(url)
+            .addHeader("Accept", "application/vnd.github+json")
+            .addHeader("Authorization", "Bearer " + u.githubToken.trim())
+            .post(RequestBody.create(payload.toString(), JSON))
+            .build();
+        try (Response response = client.newCall(request).execute()) {
+            String body = response.body() == null ? "" : response.body().string();
+            if (response.code() != 204) throw new RuntimeException("觸發 GitHub Actions 失敗：HTTP " + response.code() + "\n" + body);
+        }
+    }
+
+    String shutdownKaggle(ModelSettings settings) throws Exception {
+        if (settings.baseUrl.trim().isEmpty()) throw new IllegalArgumentException("尚未同步 Kaggle Base URL，無法停止。");
+        Request.Builder b = new Request.Builder()
+            .url(trim(settings.baseUrl) + "/shutdown")
+            .addHeader("Content-Type", "application/json")
+            .post(RequestBody.create("{}", JSON));
+        addAuth(b, settings.apiKey);
+        try (Response response = client.newCall(b.build()).execute()) {
+            String body = response.body() == null ? "" : response.body().string();
+            if (!response.isSuccessful()) throw new RuntimeException("呼叫 Kaggle 停止端點失敗：HTTP " + response.code() + "\n" + body);
+            return body.length() == 0 ? "已送出停止要求" : body;
         }
     }
 

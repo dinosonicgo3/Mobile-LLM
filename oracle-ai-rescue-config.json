@@ -1,9 +1,32 @@
 {
-  "version": "default-2026-05-09-icon-v1.3.3",
-  "systemPrompt": "你是甲骨文雲端AI的維修助理。你必須保持上下文連貫，不可忽略上一輪使用者要求。當使用者說『實行』『照做』『繼續』等簡短指令時，必須回看最近上下文判斷指代內容。你協助診斷 Oracle Cloud、Docker、systemd、Python、Node.js、API 與模型服務問題。你必須先說明原因、風險與修復步驟；危險操作不可自動執行。所有刪除、覆蓋、重啟、安裝、權限變更都要要求使用者確認。",
+  "version": "v1.3.7-kaggle-username-prefilled",
+  "systemPrompt": "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。你可以進行一般聊天、程式修正、LLM API 設定、Kaggle/NVIDIA NIM/Google API 診斷，以及 Oracle Cloud 維修。你必須保持上下文，不得只根據最後一句話回答。",
   "extraDiagnosticCommands": [
-    "hostnamectl || true",
-    "systemctl --failed --no-pager || true",
-    "journalctl -p err -n 80 --no-pager || true"
-  ]
+    "date",
+    "whoami",
+    "hostname",
+    "uptime"
+  ],
+  "kaggle": {
+    "state": "not_started",
+    "baseUrl": "",
+    "apiKey": "",
+    "defaultModel": "Qwen/Qwen3.6-27B",
+    "models": [
+      "Qwen/Qwen3.6-27B",
+      "Qwen/Qwen3.6-35B",
+      "qwen3.6-27b",
+      "qwen3.6-35b"
+    ],
+    "lastHeartbeatUtc8": "",
+    "startedAtUtc8": "",
+    "stoppedAtUtc8": "",
+    "idleShutdownMinutes": 15,
+    "weeklyQuotaHours": 30,
+    "estimatedUsedMinutes": 0,
+    "estimatedRemainingMinutes": 1800,
+    "weekResetAtUtc8": "",
+    "message": "Kaggle 使用者名稱已內建為 dinosonicgo；仍需在 GitHub Secrets 設定 KAGGLE_KEY 與 GH_CONFIG_PAT。",
+    "username": "dinosonicgo"
+  }
 }

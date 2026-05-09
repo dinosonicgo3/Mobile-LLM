@@ -4,7 +4,7 @@
 
 ## 版本
 
-v1.3.3 Java 原生版。此版將 App 顯示名稱改為「甲骨文雲端AI」，並加入自訂啟動圖示。
+v1.3.5 Java 原生版。此版加入 Kaggle Qwen 動態端點同步：App 可從 GitHub 的 oracle-ai-rescue-config.json 讀取 Kaggle 隧道網址，不需要使用者手動知道 ngrok/cloudflared URL。固定簽章仍保留，之後新版 APK 可直接覆蓋安裝並保留 App 內資料。
 
 此版改成 Java + 原生 Android UI，移除 Kotlin/Compose，目標是降低 GitHub Actions 編譯失敗機率。
 
@@ -155,3 +155,79 @@ oracle-ai-rescue-config.json
 
 - Oracle SSH 設定頁新增「從檔案匯入 SSH 私鑰」，可直接選擇 `ssh-key-2026-02-26.key`。
 - 新增私鑰格式檢查，會顯示 RSA / OpenSSH / 公鑰誤用等狀態。
+
+
+## v1.3.4 更新重點
+
+- 加入固定 APK 簽章金鑰：安裝 v1.3.4 後，之後 GitHub Actions 打包的新 APK 可直接覆蓋安裝，不必每次刪除 App。
+- 注意：若你目前手機上的舊版是用 GitHub 臨時 debug key 安裝，第一次升級到 v1.3.4 仍可能需要解除安裝一次；從 v1.3.4 開始才會穩定保留資料。
+- 聊天頁可當一般手機 LLM 使用，不限於 Oracle 維修。
+- Kaggle Qwen 預設加入 Qwen 3.6 27B / 35B 常用模型選項。
+
+
+## v1.3.5 Kaggle 動態端點同步
+
+App 不能憑空知道 Kaggle 每次啟動後的 ngrok/cloudflared 隧道網址；Kaggle 端程式必須把目前 URL 發布到一個手機可讀的位置。此版預設讀取你的 GitHub 倉庫：
+
+```
+https://raw.githubusercontent.com/dinosonicgo3/Mobile-LLM/main/oracle-ai-rescue-config.json
+```
+
+設定檔支援以下欄位：
+
+```json
+{
+  "kaggle": {
+    "baseUrl": "https://xxxx.ngrok-free.app/v1",
+    "apiKey": "",
+    "defaultModel": "Qwen/Qwen3.6-27B",
+    "models": ["Qwen/Qwen3.6-27B", "Qwen/Qwen3.6-35B"]
+  }
+}
+```
+
+手機端操作：設定 → Kaggle Qwen 自動端點 → 自動同步 Kaggle 端點。若聊天頁選 Kaggle 但 Base URL 仍是空的，App 也會嘗試自動同步一次。
+
+## v1.3.6 Kaggle 自動啟動
+
+這版新增「Kaggle」頁：
+
+- 從手機觸發 GitHub Actions 啟動 Kaggle Qwen Notebook
+- Kaggle Notebook 自動建立 cloudflared 隧道
+- Kaggle Notebook 自動把目前 API Base URL 寫回 `oracle-ai-rescue-config.json`
+- 手機 App 可同步端點、顯示狀態、顯示估算 GPU 額度、呼叫 `/shutdown`
+- 閒置 15 分鐘自動退出，以節省 Kaggle GPU 額度
+
+### 你需要在 GitHub Repo 設定 Secrets
+
+到 `Settings → Secrets and variables → Actions → New repository secret` 新增：
+
+- `KAGGLE_KEY`：你的 kaggle.json 裡面的 key
+
+`KAGGLE_USERNAME` 已在 workflow 內預設為 `dinosonicgo`，不需要再建立這個 Secret。
+- `GH_CONFIG_PAT`：細粒度 GitHub Token，只給此 repo `Contents: Read and write`
+
+手機 App 若要直接按鈕觸發 GitHub Actions，還需要在 App 的 Kaggle 頁填入另一個 GitHub Fine-grained token，只給此 repo `Actions: Read and write`。
+
+### 額度顯示
+
+Kaggle 沒有穩定公開 API 可以讓手機讀取帳號實際剩餘 GPU 額度；App 顯示的是 Kaggle 端程式根據本週啟動時間寫回 GitHub 的估算值。重置時間以 UTC+8 顯示，對應週六 08:00。
+
+
+## v1.3.7 Kaggle 使用者名稱內建
+
+此版已把 Kaggle username 固定為：
+
+```text
+dinosonicgo
+```
+
+因此 GitHub Secrets 只需要新增：
+
+```text
+KAGGLE_KEY
+GH_CONFIG_PAT
+```
+
+`KAGGLE_KEY` 來自 Kaggle 下載的 `kaggle.json` 裡面的 `key` 欄位。
+`GH_CONFIG_PAT` 用於 Kaggle 端把目前 cloudflared / OpenAI-compatible API 端點寫回 `oracle-ai-rescue-config.json`。

@@ -94,21 +94,38 @@ class SecureStore {
         put("update.repo", u.repo);
         put("update.branch", u.branch);
         put("update.configPath", u.configPath);
+        put("update.githubToken", u.githubToken);
+        put("update.kaggleStartWorkflow", u.kaggleStartWorkflow);
+        put("update.kaggleIdleMinutes", String.valueOf(u.kaggleIdleMinutes));
+        put("update.kaggleWeeklyQuotaHours", String.valueOf(u.kaggleWeeklyQuotaHours));
     }
 
     UpdateSettings loadUpdateSettings() {
         UpdateSettings u = new UpdateSettings();
-        u.owner = get("update.owner", "");
-        u.repo = get("update.repo", "");
+        u.owner = get("update.owner", "dinosonicgo3");
+        u.repo = get("update.repo", "Mobile-LLM");
         u.branch = get("update.branch", "main");
         u.configPath = get("update.configPath", "oracle-ai-rescue-config.json");
+        u.githubToken = get("update.githubToken", "");
+        u.kaggleStartWorkflow = get("update.kaggleStartWorkflow", "start-kaggle-qwen.yml");
+        u.kaggleIdleMinutes = Math.max(5, Math.min(120, parseInt(get("update.kaggleIdleMinutes", "15"), 15)));
+        u.kaggleWeeklyQuotaHours = Math.max(1, Math.min(80, parseInt(get("update.kaggleWeeklyQuotaHours", "30"), 30)));
+        if (u.owner.trim().isEmpty()) u.owner = "dinosonicgo3";
+        if (u.repo.trim().isEmpty()) u.repo = "Mobile-LLM";
+        if (u.branch.trim().isEmpty()) u.branch = "main";
+        if (u.configPath.trim().isEmpty()) u.configPath = "oracle-ai-rescue-config.json";
+        if (u.kaggleStartWorkflow.trim().isEmpty()) u.kaggleStartWorkflow = "start-kaggle-qwen.yml";
         return u;
     }
 
     void saveCatalog(String provider, List<ModelOption> models) { put("catalog." + provider, encodeModels(models, 600)); }
     List<ModelOption> loadCatalog(String provider) { return decodeModels(get("catalog." + provider, "")); }
     void saveFavorites(String provider, List<ModelOption> models) { put("favorites." + provider, encodeModels(models, 150)); }
-    List<ModelOption> loadFavorites(String provider) { return decodeModels(get("favorites." + provider, "")); }
+    List<ModelOption> loadFavorites(String provider) {
+        List<ModelOption> saved = decodeModels(get("favorites." + provider, ""));
+        if (!saved.isEmpty()) return saved;
+        return defaultFavorites(safeProvider(provider));
+    }
 
     void saveChat(List<ChatMessage> messages) {
         JSONArray arr = new JSONArray();
@@ -174,6 +191,24 @@ class SecureStore {
             JSONArray arr = new JSONArray();
             for (String c : cfg.extraDiagnosticCommands) arr.put(c);
             root.put("extraDiagnosticCommands", arr);
+            JSONObject kaggle = new JSONObject();
+            kaggle.put("baseUrl", cfg.kaggleBaseUrl);
+            kaggle.put("apiKey", cfg.kaggleApiKey);
+            kaggle.put("defaultModel", cfg.kaggleDefaultModel);
+            JSONArray km = new JSONArray();
+            for (String m : cfg.kaggleModels) km.put(m);
+            kaggle.put("models", km);
+            kaggle.put("state", cfg.kaggleState);
+            kaggle.put("lastHeartbeatUtc8", cfg.kaggleLastHeartbeatUtc8);
+            kaggle.put("startedAtUtc8", cfg.kaggleStartedAtUtc8);
+            kaggle.put("stoppedAtUtc8", cfg.kaggleStoppedAtUtc8);
+            kaggle.put("message", cfg.kaggleMessage);
+            kaggle.put("idleShutdownMinutes", cfg.kaggleIdleShutdownMinutes);
+            kaggle.put("weeklyQuotaHours", cfg.kaggleWeeklyQuotaHours);
+            kaggle.put("estimatedUsedMinutes", cfg.kaggleEstimatedUsedMinutes);
+            kaggle.put("estimatedRemainingMinutes", cfg.kaggleEstimatedRemainingMinutes);
+            kaggle.put("weekResetAtUtc8", cfg.kaggleWeekResetAtUtc8);
+            root.put("kaggle", kaggle);
             put("runtime.config", root.toString());
         } catch (Exception ignored) {}
     }
@@ -188,6 +223,27 @@ class SecureStore {
             cfg.systemPrompt = root.optString("systemPrompt", RepairPrompts.DEFAULT_SYSTEM_PROMPT);
             JSONArray arr = root.optJSONArray("extraDiagnosticCommands");
             if (arr != null) for (int i = 0; i < arr.length(); i++) cfg.extraDiagnosticCommands.add(arr.optString(i));
+            JSONObject kaggle = root.optJSONObject("kaggle");
+            if (kaggle != null) {
+                cfg.kaggleBaseUrl = kaggle.optString("baseUrl", "");
+                cfg.kaggleApiKey = kaggle.optString("apiKey", "");
+                cfg.kaggleDefaultModel = kaggle.optString("defaultModel", cfg.kaggleDefaultModel);
+                JSONArray km = kaggle.optJSONArray("models");
+                if (km != null) for (int i = 0; i < km.length(); i++) {
+                    String m = km.optString(i);
+                    if (m.trim().length() > 0) cfg.kaggleModels.add(m);
+                }
+                cfg.kaggleState = kaggle.optString("state", cfg.kaggleState);
+                cfg.kaggleLastHeartbeatUtc8 = kaggle.optString("lastHeartbeatUtc8", "");
+                cfg.kaggleStartedAtUtc8 = kaggle.optString("startedAtUtc8", "");
+                cfg.kaggleStoppedAtUtc8 = kaggle.optString("stoppedAtUtc8", "");
+                cfg.kaggleMessage = kaggle.optString("message", "");
+                cfg.kaggleIdleShutdownMinutes = kaggle.optInt("idleShutdownMinutes", cfg.kaggleIdleShutdownMinutes);
+                cfg.kaggleWeeklyQuotaHours = kaggle.optInt("weeklyQuotaHours", cfg.kaggleWeeklyQuotaHours);
+                cfg.kaggleEstimatedUsedMinutes = kaggle.optInt("estimatedUsedMinutes", cfg.kaggleEstimatedUsedMinutes);
+                cfg.kaggleEstimatedRemainingMinutes = kaggle.optInt("estimatedRemainingMinutes", cfg.kaggleEstimatedRemainingMinutes);
+                cfg.kaggleWeekResetAtUtc8 = kaggle.optString("weekResetAtUtc8", "");
+            }
         } catch (Exception ignored) {}
         return cfg;
     }
@@ -294,10 +350,28 @@ class SecureStore {
         ModelSettings m = new ModelSettings();
         m.provider = provider;
         if ("nim".equals(provider)) { m.baseUrl = "https://integrate.api.nvidia.com/v1"; m.modelName = "meta/llama-3.1-70b-instruct"; }
-        else if ("kaggle".equals(provider)) { m.baseUrl = "https://你的-kaggle-隧道網址/v1"; m.modelName = "Qwen/Qwen2.5-7B-Instruct"; }
+        else if ("kaggle".equals(provider)) { m.baseUrl = "https://你的-kaggle-隧道網址/v1"; m.modelName = "Qwen/Qwen3.6-27B"; }
         else if ("custom".equals(provider)) { m.baseUrl = "https://example.com/v1"; m.modelName = "your-model-name"; }
         else { m.baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"; m.modelName = "gemini-2.5-flash"; }
         return m;
+    }
+
+
+    private static List<ModelOption> defaultFavorites(String provider) {
+        List<ModelOption> out = new ArrayList<>();
+        if ("kaggle".equals(provider)) {
+            out.add(new ModelOption("Qwen/Qwen3.6-27B", "Qwen 3.6 27B", "Kaggle / vLLM OpenAI 相容端點常用模型；若伺服器模型名稱不同，請在設定頁手動改成實際名稱。"));
+            out.add(new ModelOption("Qwen/Qwen3.6-35B", "Qwen 3.6 35B", "Kaggle / vLLM OpenAI 相容端點常用模型；若伺服器模型名稱不同，請在設定頁手動改成實際名稱。"));
+            out.add(new ModelOption("qwen3.6-27b", "qwen3.6-27b", "備用短名稱，供自訂 FastAPI/vLLM 服務使用。"));
+            out.add(new ModelOption("qwen3.6-35b", "qwen3.6-35b", "備用短名稱，供自訂 FastAPI/vLLM 服務使用。"));
+        } else if ("nim".equals(provider)) {
+            out.add(new ModelOption("meta/llama-3.1-70b-instruct", "Llama 3.1 70B Instruct", "NVIDIA NIM 常用聊天模型。"));
+            out.add(new ModelOption("qwen/qwen2.5-coder-32b-instruct", "Qwen2.5 Coder 32B", "NVIDIA NIM 常用程式模型，實際可用性以 /models 回傳為準。"));
+        } else if ("gemini".equals(provider)) {
+            out.add(new ModelOption("gemini-2.5-flash", "Gemini 2.5 Flash", "Google API 常用快速模型。"));
+            out.add(new ModelOption("gemini-2.5-pro", "Gemini 2.5 Pro", "Google API 常用高能力模型。"));
+        }
+        return out;
     }
 
     private static boolean isAllowedRole(String role) { return "system".equals(role) || "user".equals(role) || "assistant".equals(role); }

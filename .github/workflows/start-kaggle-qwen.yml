@@ -1,0 +1,111 @@
+name: Start Kaggle Qwen API
+
+on:
+  workflow_dispatch:
+    inputs:
+      idle_minutes:
+        description: '閒置幾分鐘後自動關閉 Kaggle GPU'
+        required: true
+        default: '15'
+      weekly_quota_hours:
+        description: '每週 GPU 額度小時，僅供估算'
+        required: true
+        default: '30'
+      model_name:
+        description: 'Kaggle 端要啟動的模型名稱'
+        required: false
+        default: 'Qwen/Qwen3.6-27B'
+
+permissions:
+  contents: read
+
+env:
+  KAGGLE_USERNAME: dinosonicgo
+  KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+
+jobs:
+  start:
+    name: Push and start Kaggle Qwen kernel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Kaggle CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install kaggle
+
+      - name: Prepare Kaggle API credential
+        run: |
+          mkdir -p ~/.kaggle
+          python - <<'PY'
+          import json, os, pathlib
+          user = os.environ.get('KAGGLE_USERNAME', '').strip()
+          key = os.environ.get('KAGGLE_KEY', '').strip()
+          if not user or not key:
+              raise SystemExit('Missing GitHub secret KAGGLE_KEY')
+          pathlib.Path.home().joinpath('.kaggle/kaggle.json').write_text(json.dumps({'username': user, 'key': key}), encoding='utf-8')
+          PY
+          chmod 600 ~/.kaggle/kaggle.json
+
+      - name: Generate Kaggle kernel package
+        env:
+          GH_CONFIG_PAT: ${{ secrets.GH_CONFIG_PAT }}
+          GH_OWNER: dinosonicgo3
+          GH_REPO: Mobile-LLM
+          GH_BRANCH: main
+          CONFIG_PATH: oracle-ai-rescue-config.json
+          IDLE_MINUTES: ${{ github.event.inputs.idle_minutes }}
+          WEEKLY_QUOTA_HOURS: ${{ github.event.inputs.weekly_quota_hours }}
+          MODEL_NAME: ${{ github.event.inputs.model_name }}
+        run: |
+          if [ -z "$GH_CONFIG_PAT" ]; then
+            echo "Missing GitHub secret GH_CONFIG_PAT. It needs Contents: Read and write on this repo."
+            exit 1
+          fi
+          rm -rf kaggle_runtime
+          mkdir -p kaggle_runtime
+          cp kaggle_qwen_kernel/kaggle_qwen_server.py kaggle_runtime/kaggle_qwen_server.py
+          python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path('kaggle_runtime/kaggle_qwen_server.py')
+          s = p.read_text(encoding='utf-8')
+          repl = {
+              '__GH_TOKEN__': os.environ['GH_CONFIG_PAT'],
+              '__GH_OWNER__': os.environ['GH_OWNER'],
+              '__GH_REPO__': os.environ['GH_REPO'],
+              '__GH_BRANCH__': os.environ['GH_BRANCH'],
+              '__CONFIG_PATH__': os.environ['CONFIG_PATH'],
+              '__IDLE_MINUTES__': os.environ['IDLE_MINUTES'],
+              '__WEEKLY_QUOTA_HOURS__': os.environ['WEEKLY_QUOTA_HOURS'],
+              '__MODEL_NAME__': os.environ['MODEL_NAME'] or 'Qwen/Qwen3.6-27B',
+          }
+          for k, v in repl.items():
+              s = s.replace(k, v.replace('\\', '\\\\').replace('"', '\\"'))
+          p.write_text(s, encoding='utf-8')
+          meta = {
+              'id': f"{os.environ['KAGGLE_USERNAME']}/mobile-llm-kaggle-qwen",
+              'title': 'Mobile LLM Kaggle Qwen API',
+              'code_file': 'kaggle_qwen_server.py',
+              'language': 'python',
+              'kernel_type': 'script',
+              'is_private': True,
+              'enable_gpu': True,
+              'enable_internet': True,
+              'dataset_sources': [],
+              'competition_sources': [],
+              'kernel_sources': []
+          }
+          pathlib.Path('kaggle_runtime/kernel-metadata.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+          PY
+
+      - name: Push Kaggle kernel
+        run: |
+          # T4 較適合 Qwen；若帳號沒有 T4，Kaggle 可能會改派或失敗。
+          kaggle kernels push -p kaggle_runtime --accelerator NvidiaTeslaT4 --timeout 43200

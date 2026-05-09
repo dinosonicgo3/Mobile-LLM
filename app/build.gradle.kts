@@ -10,13 +10,26 @@ android {
         applicationId = "com.oracleairescue"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.3.3"
+        versionCode = 10
+        versionName = "1.3.7"
+    }
+
+    signingConfigs {
+        create("stableLocal") {
+            storeFile = file("oracleairescue-update-key.jks")
+            storePassword = "oracleairescue"
+            keyAlias = "oracleairescue"
+            keyPassword = "oracleairescue"
+        }
     }
 
     buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("stableLocal")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stableLocal")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

@@ -75,6 +75,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
+        autoSyncKaggleEndpointQuietly();
     }
 
     @Override
@@ -116,7 +117,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.3.3");
+        title.setText("甲骨文雲端AI  v1.3.7");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -134,6 +135,7 @@ public class MainActivity extends Activity {
         addNav(nav, "聊天", selected, v -> showChatPage());
         addNav(nav, "設定", selected, v -> showSettingsPage());
         addNav(nav, "Oracle", selected, v -> showServerPage());
+        addNav(nav, "Kaggle", selected, v -> showKagglePage());
         addNav(nav, "維修", selected, v -> showRepairPage());
         addNav(nav, "更新", selected, v -> showUpdatePage());
     }
@@ -160,7 +162,7 @@ public class MainActivity extends Activity {
     private void showChatPage() {
         LinearLayout box = page("聊天");
         addSection(box, "聊天與上下文");
-        TextView hint = label("聊天會自動帶入最近上下文。若你前一句要求規劃，下一句說『實行』，App 會把前文一起送給模型。", 14, false);
+        TextView hint = label("這裡可當一般手機 LLM 聊天使用，也可用來維修 Oracle。聊天會自動帶入最近上下文，避免剛說完就忘記。", 14, false);
         box.addView(hint);
 
         chatModelSpinner = new Spinner(this);
@@ -219,8 +221,15 @@ public class MainActivity extends Activity {
         chatInput.setText("");
         chatMessages.add(new ChatMessage("user", text));
         renderChatLog();
-        List<ChatMessage> payload = buildContextMessages(runtimeConfig.systemPrompt, chatMessages, modelSettings.maxContextCharacters);
         runTask("正在呼叫模型…", () -> {
+            if (isKaggleEndpointMissing(modelSettings)) {
+                RuntimeConfig cfg = llm.fetchRuntimeConfig(updateSettings);
+                store.backupRuntimeConfig();
+                store.saveRuntimeConfig(cfg);
+                runtimeConfig = cfg;
+                applyKaggleConfig(cfg, false);
+            }
+            List<ChatMessage> payload = buildContextMessages(runtimeConfig.systemPrompt, chatMessages, modelSettings.maxContextCharacters);
             String reply = llm.sendChat(modelSettings.copy(), payload);
             ui.post(() -> {
                 chatMessages.add(new ChatMessage("assistant", reply));
@@ -374,8 +383,33 @@ public class MainActivity extends Activity {
         });
         row3.addView(addCurrent, weight()); row3.addView(test, weight()); box.addView(row3);
 
+        addSection(box, "Kaggle Qwen 自動端點");
+        box.addView(label("你不需要知道隧道網址。App 會從 GitHub 倉庫的 oracle-ai-rescue-config.json 讀取 Kaggle 目前公開端點。Kaggle 端程式只要把目前 ngrok/cloudflared 網址寫進該設定檔，手機就能自動套用。", 14, false));
+        Button syncKaggle = button("自動同步 Kaggle 端點");
+        syncKaggle.setOnClickListener(v -> runTask("正在同步 Kaggle 端點…", () -> {
+            RuntimeConfig cfg = llm.fetchRuntimeConfig(updateSettings);
+            store.backupRuntimeConfig();
+            store.saveRuntimeConfig(cfg);
+            runtimeConfig = cfg;
+            boolean ok = applyKaggleConfig(cfg, true);
+            ui.post(() -> {
+                if (ok) {
+                    modelSettings = store.loadModelFor("kaggle");
+                    providerSpinner.setSelection(providerIndex("kaggle"));
+                    apiKey.setText(modelSettings.apiKey);
+                    baseUrl.setText(modelSettings.baseUrl);
+                    modelName.setText(modelSettings.modelName);
+                    catalogInfo.setText("模型清單：" + store.loadCatalog("kaggle").size() + "｜常用模型：" + store.loadFavorites("kaggle").size());
+                    showTextDialog("Kaggle 端點已同步", "Base URL：" + modelSettings.baseUrl + "\n模型：" + modelSettings.modelName + "\n\n之後聊天頁選 Kaggle 模型即可直接使用。 ");
+                } else {
+                    showTextDialog("尚未取得 Kaggle 端點", "GitHub 設定檔中還沒有 kaggle.baseUrl / kaggleBaseUrl。\n\n這代表 Kaggle 端程式尚未把目前隧道網址發布到 GitHub。App 無法憑空知道動態隧道網址。 ");
+                }
+            });
+        }));
+        box.addView(syncKaggle);
+
         addSection(box, "Kaggle Qwen 設定提示");
-        box.addView(label("Kaggle 端若用 vLLM/FastAPI，請把 Base URL 設為你的 ngrok/cloudflared 隧道網址加 /v1，例如：https://xxxx.ngrok-free.app/v1。模型名稱必須與 Kaggle 伺服器啟動時一致，例如 Qwen/Qwen2.5-7B-Instruct、你自己的 Qwen 27B/35B 名稱。若沒有 API Key 可留空。", 14, false));
+        box.addView(label("Kaggle 端若用 vLLM/FastAPI，可由 Kaggle 程式把 Base URL 自動發布到 GitHub 設定檔；手機端按『自動同步 Kaggle 端點』即可，不必手動輸入網址。若你仍想手動填，Base URL 格式為：https://xxxx.ngrok-free.app/v1 或 https://xxxx.trycloudflare.com/v1。", 14, false));
     }
 
     private void openFavoritesDialog(EditText modelName, TextView catalogInfo) {
@@ -480,6 +514,129 @@ public class MainActivity extends Activity {
         box.addView(smartTest);
     }
 
+
+    private void showKagglePage() {
+        LinearLayout box = page("Kaggle");
+        addSection(box, "Kaggle Qwen 自動啟動與端點同步");
+        box.addView(label("這頁用來從手機觸發 GitHub Actions，讓 GitHub Actions 啟動 Kaggle Notebook。Kaggle Notebook 會啟動 Qwen API、建立 cloudflared 隧道、把網址寫回 GitHub 設定檔，手機再自動同步。", 14, false));
+
+        EditText ghToken = edit("GitHub Fine-grained Token，只需此 repo 的 Actions: Read and write", false);
+        ghToken.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        ghToken.setText(updateSettings.githubToken);
+        box.addView(ghToken);
+
+        EditText workflow = edit("啟動 workflow 檔名", false);
+        workflow.setText(updateSettings.kaggleStartWorkflow);
+        box.addView(workflow);
+
+        EditText idle = edit("閒置自動關閉分鐘數，建議 15", false);
+        idle.setInputType(InputType.TYPE_CLASS_NUMBER);
+        idle.setText(String.valueOf(updateSettings.kaggleIdleMinutes));
+        box.addView(idle);
+
+        EditText quota = edit("每週 GPU 額度小時，預設 30；實際以 Kaggle 顯示為準", false);
+        quota.setInputType(InputType.TYPE_CLASS_NUMBER);
+        quota.setText(String.valueOf(updateSettings.kaggleWeeklyQuotaHours));
+        box.addView(quota);
+
+        TextView state = label(kaggleStatusText(runtimeConfig), 14, false);
+        state.setTextIsSelectable(true);
+        state.setBackgroundColor(0xffffffff);
+        state.setPadding(dp(10), dp(10), dp(10), dp(10));
+        box.addView(state);
+
+        LinearLayout row0 = row();
+        Button save = button("儲存 Kaggle 控制設定");
+        save.setOnClickListener(v -> {
+            updateSettings.githubToken = ghToken.getText().toString().trim();
+            updateSettings.kaggleStartWorkflow = workflow.getText().toString().trim();
+            updateSettings.kaggleIdleMinutes = Math.max(5, Math.min(120, parseInt(idle.getText().toString(), 15)));
+            updateSettings.kaggleWeeklyQuotaHours = Math.max(1, Math.min(80, parseInt(quota.getText().toString(), 30)));
+            store.saveUpdateSettings(updateSettings);
+            toast("已儲存 Kaggle 控制設定");
+        });
+        Button sync = button("同步 Kaggle 狀態/端點");
+        sync.setOnClickListener(v -> { save.performClick(); syncKaggleStatusToUi(state, true); });
+        row0.addView(save, weight()); row0.addView(sync, weight()); box.addView(row0);
+
+        LinearLayout row1 = row();
+        Button start = button("啟動 Kaggle Qwen");
+        start.setOnClickListener(v -> confirm("會觸發 GitHub Actions，啟動 Kaggle GPU Notebook。啟動後通常需要數分鐘載入模型。確定？", () -> {
+            save.performClick();
+            runTask("正在觸發 Kaggle 啟動 workflow…", () -> {
+                org.json.JSONObject inputs = new org.json.JSONObject()
+                    .put("idle_minutes", String.valueOf(updateSettings.kaggleIdleMinutes))
+                    .put("weekly_quota_hours", String.valueOf(updateSettings.kaggleWeeklyQuotaHours));
+                llm.dispatchWorkflow(updateSettings, updateSettings.kaggleStartWorkflow, inputs);
+                ui.post(() -> showTextDialog("已送出啟動要求", "GitHub Actions 已接受啟動要求。\n\n請等待 2～8 分鐘後按『同步 Kaggle 狀態/端點』。如果模型很大，可能需要更久。"));
+            });
+        }));
+        Button stop = button("停止 Kaggle API");
+        stop.setOnClickListener(v -> confirm("會呼叫目前 Kaggle API 的 /shutdown，讓 Kaggle 端程式結束以停止消耗 GPU。確定？", () -> {
+            runTask("正在要求 Kaggle 停止…", () -> {
+                ModelSettings kg = store.loadModelFor("kaggle");
+                String out = llm.shutdownKaggle(kg);
+                ui.post(() -> showTextDialog("停止要求已送出", out));
+            });
+        }));
+        row1.addView(start, weight()); row1.addView(stop, weight()); box.addView(row1);
+
+        addSection(box, "額度與重置時間，UTC+8");
+        box.addView(label("Kaggle 沒有穩定公開 API 可讓手機直接讀取你帳號的剩餘 GPU 額度；App 顯示的是由 Kaggle 端程式寫回 GitHub 的估算值。Kaggle 額度一般每週六 00:00 UTC 重置，也就是台灣時間 UTC+8 的週六 08:00。", 14, false));
+        Button resetEstimate = button("把本週估算用量歸零");
+        resetEstimate.setOnClickListener(v -> showTextDialog("說明", "目前估算用量由 Kaggle 端寫回 GitHub 設定檔。若要歸零，請等週六 08:00 後啟動 Kaggle，Kaggle 端程式會自動建立新週期。"));
+        box.addView(resetEstimate);
+
+        addSection(box, "你在 Kaggle/GitHub 需要做的一次性設定");
+        box.addView(label("Kaggle 使用者名稱已內建：dinosonicgo。\n1. 到 Kaggle 帳號設定產生 kaggle.json API Token。\n2. 到 GitHub repo → Settings → Secrets and variables → Actions → New repository secret。\n3. 只需要新增 KAGGLE_KEY。\n4. 新增 GH_CONFIG_PAT：細粒度 GitHub token，只給 Mobile-LLM 這個 repo 的 Contents: Read and write。\n5. 手機 App 這裡的 GitHub Token 只需 Actions: Read and write，用來按鈕觸發 workflow。", 14, false));
+    }
+
+    private void syncKaggleStatusToUi(TextView target, boolean showDialog) {
+        runTask("正在同步 Kaggle 狀態…", () -> {
+            RuntimeConfig cfg = llm.fetchRuntimeConfig(updateSettings);
+            store.backupRuntimeConfig();
+            store.saveRuntimeConfig(cfg);
+            runtimeConfig = cfg;
+            boolean ok = applyKaggleConfig(cfg, true);
+            ui.post(() -> {
+                target.setText(kaggleStatusText(runtimeConfig));
+                if (showDialog) showTextDialog("Kaggle 狀態", kaggleStatusText(runtimeConfig) + "\n\n端點同步：" + (ok ? "成功" : "尚未取得 Base URL"));
+            });
+        });
+    }
+
+    private String kaggleStatusText(RuntimeConfig cfg) {
+        int remaining = cfg.kaggleEstimatedRemainingMinutes > 0 ? cfg.kaggleEstimatedRemainingMinutes : Math.max(0, updateSettings.kaggleWeeklyQuotaHours * 60 - cfg.kaggleEstimatedUsedMinutes);
+        return "狀態：" + cfg.kaggleState + "\n" +
+               "Base URL：" + (cfg.kaggleBaseUrl == null || cfg.kaggleBaseUrl.isEmpty() ? "尚未發布" : cfg.kaggleBaseUrl) + "\n" +
+               "模型：" + cfg.kaggleDefaultModel + "\n" +
+               "最後心跳，UTC+8：" + emptyDash(cfg.kaggleLastHeartbeatUtc8) + "\n" +
+               "啟動時間，UTC+8：" + emptyDash(cfg.kaggleStartedAtUtc8) + "\n" +
+               "停止時間，UTC+8：" + emptyDash(cfg.kaggleStoppedAtUtc8) + "\n" +
+               "閒置自動關閉：" + cfg.kaggleIdleShutdownMinutes + " 分鐘\n" +
+               "本週估算已用：" + formatMinutes(cfg.kaggleEstimatedUsedMinutes) + "\n" +
+               "本週估算剩餘：" + formatMinutes(remaining) + "\n" +
+               "每週重置，UTC+8：" + (cfg.kaggleWeekResetAtUtc8 == null || cfg.kaggleWeekResetAtUtc8.isEmpty() ? nextKaggleResetUtc8() : cfg.kaggleWeekResetAtUtc8) + "\n" +
+               "訊息：" + emptyDash(cfg.kaggleMessage);
+    }
+
+    private static String emptyDash(String s) { return s == null || s.trim().isEmpty() ? "—" : s; }
+    private static String formatMinutes(int minutes) { return (minutes / 60) + " 小時 " + (minutes % 60) + " 分鐘"; }
+
+    private static String nextKaggleResetUtc8() {
+        java.util.Calendar cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Taipei"));
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 8);
+        cal.set(java.util.Calendar.MINUTE, 0);
+        cal.set(java.util.Calendar.SECOND, 0);
+        cal.set(java.util.Calendar.MILLISECOND, 0);
+        int dow = cal.get(java.util.Calendar.DAY_OF_WEEK);
+        int days = java.util.Calendar.SATURDAY - dow;
+        if (days < 0) days += 7;
+        if (days == 0 && java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Taipei")).after(cal)) days = 7;
+        cal.add(java.util.Calendar.DAY_OF_MONTH, days);
+        return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm 'UTC+8'", java.util.Locale.US).format(cal.getTime());
+    }
+
     private void showRepairPage() {
         LinearLayout box = page("維修");
         addSection(box, "一鍵診斷");
@@ -574,7 +731,7 @@ public class MainActivity extends Activity {
     private void showUpdatePage() {
         LinearLayout box = page("更新");
         addSection(box, "GitHub 設定熱更新，不用重裝 APK");
-        box.addView(label("這裡會從你的 GitHub 倉庫讀取 oracle-ai-rescue-config.json，可更新系統提示詞與額外診斷指令。若更新造成問題，可一鍵回滾到上一份設定。", 14, false));
+        box.addView(label("這裡會從你的 GitHub 倉庫讀取 oracle-ai-rescue-config.json，可更新系統提示詞、額外診斷指令，也可同步 Kaggle Qwen 的動態隧道端點。若更新造成問題，可一鍵回滾到上一份設定。", 14, false));
         EditText owner = edit("GitHub owner，例如你的帳號", false); owner.setText(updateSettings.owner); box.addView(owner);
         EditText repo = edit("Repository 名稱", false); repo.setText(updateSettings.repo); box.addView(repo);
         EditText branch = edit("分支，通常 main", false); branch.setText(updateSettings.branch); box.addView(branch);
@@ -598,7 +755,8 @@ public class MainActivity extends Activity {
             store.backupRuntimeConfig();
             store.saveRuntimeConfig(cfg);
             runtimeConfig = cfg;
-            ui.post(() -> { current.setText("目前設定版：" + runtimeConfig.version + "\n額外診斷指令：" + runtimeConfig.extraDiagnosticCommands.size()); showTextDialog("已套用設定", "版本：" + cfg.version + "\n\n系統提示詞：\n" + cfg.systemPrompt + "\n\n額外診斷指令：\n" + cfg.extraDiagnosticCommands); });
+            boolean kg = applyKaggleConfig(cfg, false);
+            ui.post(() -> { current.setText("目前設定版：" + runtimeConfig.version + "\n額外診斷指令：" + runtimeConfig.extraDiagnosticCommands.size()); showTextDialog("已套用設定", "版本：" + cfg.version + "\n\nKaggle 端點：" + (kg ? cfg.kaggleBaseUrl : "未提供") + "\nKaggle 模型：" + cfg.kaggleModels + "\n\n系統提示詞：\n" + cfg.systemPrompt + "\n\n額外診斷指令：\n" + cfg.extraDiagnosticCommands); });
         });});
         row1.addView(save, weight()); row1.addView(fetch, weight()); box.addView(row1);
 
@@ -781,12 +939,53 @@ public class MainActivity extends Activity {
     }
     private String providerTitle(String code) { return providerLabels[providerIndex(code)]; }
 
+    private boolean isKaggleEndpointMissing(ModelSettings m) {
+        if (m == null || !"kaggle".equals(m.provider)) return false;
+        String b = m.baseUrl == null ? "" : m.baseUrl.trim();
+        return b.length() == 0 || b.contains("你的-kaggle") || b.contains("example.com") || b.contains("隧道網址");
+    }
+
+    private void autoSyncKaggleEndpointQuietly() {
+        if (!isKaggleEndpointMissing(store.loadModelFor("kaggle"))) return;
+        bg.submit(() -> {
+            try {
+                RuntimeConfig cfg = llm.fetchRuntimeConfig(updateSettings);
+                store.saveRuntimeConfig(cfg);
+                runtimeConfig = cfg;
+                boolean ok = applyKaggleConfig(cfg, false);
+                if (ok) ui.post(() -> setStatus("已自動同步 Kaggle 端點"));
+            } catch (Exception ignored) {}
+        });
+    }
+
+    private boolean applyKaggleConfig(RuntimeConfig cfg, boolean switchToKaggle) {
+        if (cfg == null) return false;
+        String base = cfg.kaggleBaseUrl == null ? "" : cfg.kaggleBaseUrl.trim();
+        if (base.length() == 0 || base.contains("your-") || base.contains("你的")) return false;
+        ModelSettings kg = store.loadModelFor("kaggle");
+        kg.provider = "kaggle";
+        kg.baseUrl = base.replaceAll("/+$", "");
+        if (cfg.kaggleApiKey != null && cfg.kaggleApiKey.trim().length() > 0) kg.apiKey = cfg.kaggleApiKey.trim();
+        if (cfg.kaggleDefaultModel != null && cfg.kaggleDefaultModel.trim().length() > 0) kg.modelName = cfg.kaggleDefaultModel.trim();
+        store.saveModel(kg);
+        List<ModelOption> models = new ArrayList<>();
+        for (String id : cfg.kaggleModels) {
+            if (id != null && id.trim().length() > 0) models.add(new ModelOption(id.trim(), id.trim(), "GitHub 設定檔同步"));
+        }
+        if (!models.isEmpty()) {
+            store.saveCatalog("kaggle", models);
+            store.saveFavorites("kaggle", models);
+        }
+        if (switchToKaggle || "kaggle".equals(modelSettings.provider)) modelSettings = kg;
+        return true;
+    }
+
     private ModelSettings defaultsFor(String provider) {
         ModelSettings m = new ModelSettings();
         m.provider = provider;
         if ("gemini".equals(provider)) { m.baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"; m.modelName = "gemini-2.5-flash"; }
         else if ("nim".equals(provider)) { m.baseUrl = "https://integrate.api.nvidia.com/v1"; m.modelName = "meta/llama-3.1-70b-instruct"; }
-        else if ("kaggle".equals(provider)) { m.baseUrl = "https://你的-kaggle-隧道網址/v1"; m.modelName = "Qwen/Qwen2.5-7B-Instruct"; }
+        else if ("kaggle".equals(provider)) { m.baseUrl = ""; m.modelName = "Qwen/Qwen3.6-27B"; }
         else { m.baseUrl = "https://example.com/v1"; m.modelName = "your-model-name"; }
         return m;
     }

@@ -39,10 +39,14 @@ class ServerSettings {
 }
 
 class UpdateSettings {
-    String owner = "";
-    String repo = "";
+    String owner = "dinosonicgo3";
+    String repo = "Mobile-LLM";
     String branch = "main";
     String configPath = "oracle-ai-rescue-config.json";
+    String githubToken = "";
+    String kaggleStartWorkflow = "start-kaggle-qwen.yml";
+    int kaggleIdleMinutes = 15;
+    int kaggleWeeklyQuotaHours = 30;
 }
 
 class ChatMessage {
@@ -100,6 +104,20 @@ class RuntimeConfig {
     String version = "內建";
     String systemPrompt = RepairPrompts.DEFAULT_SYSTEM_PROMPT;
     List<String> extraDiagnosticCommands = new ArrayList<>();
+    String kaggleBaseUrl = "";
+    String kaggleApiKey = "";
+    String kaggleDefaultModel = "Qwen/Qwen3.6-27B";
+    List<String> kaggleModels = new ArrayList<>();
+    String kaggleState = "unknown";
+    String kaggleLastHeartbeatUtc8 = "";
+    String kaggleStartedAtUtc8 = "";
+    String kaggleStoppedAtUtc8 = "";
+    String kaggleMessage = "";
+    int kaggleIdleShutdownMinutes = 15;
+    int kaggleWeeklyQuotaHours = 30;
+    int kaggleEstimatedUsedMinutes = 0;
+    int kaggleEstimatedRemainingMinutes = 30 * 60;
+    String kaggleWeekResetAtUtc8 = "";
 }
 
 class ReleaseInfo {
