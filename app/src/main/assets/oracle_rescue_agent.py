@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.0
+"""Oracle AI Rescue Agent v2.0.2
 Runs on the Oracle host. The Android app is only a remote controller/bridge.
+Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
+Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
 The LLM decides tools; this script executes safe local tools, backs up files,
 validates changes, and asks 31B verifier before keeping repairs.
 """
@@ -64,7 +66,7 @@ def chat_chain(models, messages, timeout=120):
             errors.append(f"{label}: empty response")
         except Exception as e:
             errors.append(f"{label}: {type(e).__name__}: {e}")
-    raise RuntimeError("all models failed: " + " | ".join(errors))
+    raise RuntimeError("main model failed; fallback is disabled for diagnosis/repair: " + " | ".join(errors))
 
 
 def safe_path(path):
@@ -234,7 +236,7 @@ def repair_file(req, models, path, instruction):
     try:
         proposed, used, errs = chat_chain(models, gen_msgs, timeout=180)
     except Exception as e:
-        return {"ok": False, "output": f"主模型產生修正版失敗：{type(e).__name__}: {e}"}
+        return {"ok": False, "output": f"主模型產生修正版失敗：{type(e).__name__}: {e}\n主模型不使用備援；請修正目前選定模型錯誤後重試。"}
     proposed = strip_code_fence(proposed)
     if not proposed.strip() or proposed == original:
         return {"ok": False, "output": "主模型沒有產生有效修改，或修正版與原檔相同。"}
@@ -284,13 +286,13 @@ def main():
     ns = ap.parse_args()
     req = json.loads(Path(ns.request).read_text(encoding="utf-8"))
     question = req.get("question") or ""
-    models = []
-    if req.get("main_model"): models.append(req["main_model"])
-    for m in req.get("fallback_models") or []:
-        if m: models.append(m)
-    models = [m for m in models if m and (m.get("api_key") or "").strip()]
+    main_model = req.get("main_model") or {}
+    models = [main_model] if main_model and (main_model.get("api_key") or "").strip() else []
+    # v2.0.2：主模型嚴禁備援。
+    # 一般檢修、工具判斷、讀檔分析、產生修正版，都只允許使用 main_model。
+    # req.fallback_models 即使存在也會被忽略；備援只允許在 verify_with_31b() 後段驗證內使用。
     if not models:
-        print("# Oracle Rescue Agent 失敗\n\n沒有可用 LLM API Key。")
+        print("# Oracle Rescue Agent 失敗\n\n主模型沒有可用 LLM API Key。主模型不使用備援；請修正目前選定模型的 API Key / Base URL / 模型名稱。")
         return 2
     system = (req.get("system_prompt") or "") + "\n\n你正在 Oracle 主機本機的 Rescue Agent 內。App 只是遙控器，不會代你搜尋或判斷。你必須自己選工具。所有工具以 JSON 呼叫，不要用 Markdown code fence。可用工具：\n{\"tool\":\"ssh_exec\",\"args\":{\"command\":\"讀取型 shell 指令\"}}\n{\"tool\":\"read_file\",\"args\":{\"path\":\"/home/...\"}}\n{\"tool\":\"list_dir\",\"args\":{\"path\":\"/home/...\"}}\n{\"tool\":\"repair_file\",\"args\":{\"path\":\"/home/...\",\"instruction\":\"修正要求\"}}\n{\"tool\":\"final\",\"answer\":\"最終回答\"}\n安全規則：shell 只允許讀取型指令；修改檔案必須用 repair_file，會自動備份、測試、31B 驗證、失敗回滾。"
     messages = [{"role":"system", "content":system}, {"role":"user", "content":"使用者問題：" + question + "\n請你直接選第一個最小工具。"}]
@@ -302,7 +304,8 @@ def main():
             used_models.append(used)
         except Exception as e:
             print("# Oracle Rescue Agent 模型失敗\n")
-            print(f"步驟 {step} 呼叫 LLM 失敗：{type(e).__name__}: {e}\n")
+            print(f"步驟 {step} 呼叫主模型失敗：{type(e).__name__}: {e}\n")
+            print("主模型不使用備援；這是刻意設計，方便正確定位 API / 模型 / 工具提示錯誤。\n")
             if transcript:
                 print("## 已取得工具結果\n")
                 print("```text")

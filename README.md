@@ -771,3 +771,45 @@ versionName = 2.0.1
 ```
 
 可直接覆蓋安裝 v1.7.1 / v2.0.0。
+
+
+## v2.0.2 主模型不備援、驗證模型才備援
+
+依使用者確認，模型策略固定為：
+
+### 一般檢修 / 修程式主模型：不使用備援
+
+適用：
+
+- 一般聊天
+- Oracle Rescue Agent 工具判斷
+- 讀檔分析
+- 產生修正版
+- 主模型修程式
+
+規則：
+
+```text
+只使用目前 App 選定模型。
+失敗就直接報錯。
+不自動切換 Google / NIM / 其他模型。
+```
+
+原因：避免不同模型能力與判斷混在一起，導致錯誤來源無法定位。
+
+### 後段驗證模型：保留備援
+
+順序：
+
+```text
+Google Gemma 4 31B
+↓ 失敗
+NVIDIA NIM Gemma 4 31B
+↓ 仍失敗
+後段驗證失敗，阻擋修復保留
+```
+
+此規則已同時套用到：
+
+- Android App 傳給 Oracle Rescue Agent 的 request
+- Oracle 端 `oracle_rescue_agent.py`

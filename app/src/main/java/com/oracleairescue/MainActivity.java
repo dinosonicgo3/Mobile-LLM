@@ -96,7 +96,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v2.0.1｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v2.0.2｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -139,7 +139,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v2.0.1");
+        title.setText("甲骨文雲端AI  v2.0.2");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -428,18 +428,17 @@ public class MainActivity extends Activity {
 
     private org.json.JSONObject buildRescueAgentRequest(String userText) throws Exception {
         org.json.JSONObject root = new org.json.JSONObject();
-        root.put("version", "2.0.0");
+        root.put("version", "2.0.2");
         root.put("question", userText);
         root.put("system_prompt", runtimeConfig == null ? "" : runtimeConfig.systemPrompt);
         root.put("max_steps", 10);
-        root.put("main_model", modelConfigJson("main", modelSettings));
+        // v2.0.2 規則：
+        // 主模型不使用備援。一般檢修、工具判斷、讀檔分析、產生修正版都只用目前選定模型。
+        // 若主模型 timeout / API 失敗 / 空白，直接報錯，方便定位真正錯誤。
+        // 只有後段驗證保留 31B 備援。
+        root.put("main_model", modelConfigJson("main-only", modelSettings));
+        root.put("main_model_fallback", "disabled");
 
-        org.json.JSONArray fallbacks = new org.json.JSONArray();
-        ModelSettings google = store.loadModelFor("gemini");
-        if (google != null && google.apiKey != null && !google.apiKey.trim().isEmpty()) fallbacks.put(modelConfigJson("Google fallback", google));
-        ModelSettings nimVerifier = nimVerifier31BSettings();
-        if (nimVerifier != null && nimVerifier.apiKey != null && !nimVerifier.apiKey.trim().isEmpty()) fallbacks.put(modelConfigJson("NIM 31B fallback", nimVerifier));
-        root.put("fallback_models", fallbacks);
         root.put("verifier_google", modelConfigJson("Google 31B verifier", googleVerifier31BSettings()));
         root.put("verifier_nim", modelConfigJson("NIM 31B verifier", nimVerifier31BSettings()));
         return root;
@@ -2344,7 +2343,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v2.0.1\n");
+        sb.append("- App 版本：v2.0.2\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");
