@@ -186,6 +186,16 @@ class SecureStore {
 
     void clearHistory() { put("history", ""); }
 
+    void appendAppLog(String line) {
+        String old = get("app.logs", "");
+        String item = sanitize(line);
+        put("app.logs", limit(item + "\n" + old, 240000));
+    }
+
+    String loadAppLogs() { return get("app.logs", ""); }
+
+    void clearAppLogs() { put("app.logs", ""); }
+
     void saveRuntimeConfig(RuntimeConfig cfg) {
         try {
             JSONObject root = new JSONObject();

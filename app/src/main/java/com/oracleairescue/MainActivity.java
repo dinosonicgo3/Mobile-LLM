@@ -5,6 +5,8 @@ import android.content.Intent;
 import android.graphics.Typeface;
 import android.net.Uri;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import android.os.Bundle;
@@ -27,6 +29,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import android.app.Activity;
+import androidx.core.content.FileProvider;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -75,6 +78,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
+        appLog("APP 啟動 v1.4.5｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -117,7 +121,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.4.4");
+        title.setText("甲骨文雲端AI  v1.4.5");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -182,16 +186,22 @@ public class MainActivity extends Activity {
         chatInput.setMinLines(3);
         box.addView(chatInput);
 
-        LinearLayout row = row();
-        Button send = button("送出");
+        Button send = button("送出訊息");
+        send.setTextSize(18);
+        send.setMinHeight(dp(58));
         send.setOnClickListener(v -> sendChat());
-        Button clear = button("清空聊天");
-        clear.setOnClickListener(v -> confirm("確定清空聊天紀錄？", () -> {
-            chatMessages.clear(); store.clearChat(); renderChatLog(); toast("已清空");
+        box.addView(send, new LinearLayout.LayoutParams(-1, dp(64)));
+
+        LinearLayout toolRow = row();
+        Button report = button("匯出LOG回報");
+        report.setOnClickListener(v -> openReportDialog());
+        Button clear = button("清空聊天（需確認）");
+        clear.setOnClickListener(v -> confirm("確定清空聊天紀錄？\n\n這個按鈕已經移到送出訊息下方，避免誤觸。", () -> {
+            chatMessages.clear(); store.clearChat(); renderChatLog(); appLog("清空聊天紀錄"); toast("已清空");
         }));
-        row.addView(send, weight());
-        row.addView(clear, weight());
-        box.addView(row);
+        toolRow.addView(report, weight());
+        toolRow.addView(clear, weight());
+        box.addView(toolRow);
     }
 
     private void refreshChatModelSpinner() {
@@ -219,6 +229,7 @@ public class MainActivity extends Activity {
     private void sendChat() {
         String text = chatInput.getText().toString().trim();
         if (text.isEmpty()) return;
+        appLog("CHAT 送出訊息｜平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName + "｜長度：" + text.length());
         chatInput.setText("");
         chatMessages.add(new ChatMessage("user", text));
         renderChatLog();
@@ -233,6 +244,7 @@ public class MainActivity extends Activity {
             List<ChatMessage> payload = buildContextMessages(runtimeConfig.systemPrompt, chatMessages, modelSettings.maxContextCharacters);
             String reply = llm.sendChat(modelSettings.copy(), payload);
             ui.post(() -> {
+                appLog("CHAT 收到回覆｜長度：" + (reply == null ? 0 : reply.length()));
                 chatMessages.add(new ChatMessage("assistant", reply));
                 store.saveChat(chatMessages);
                 renderChatLog();
@@ -879,11 +891,159 @@ public class MainActivity extends Activity {
             .show();
     }
 
+
+    private void openReportDialog() {
+        new AlertDialog.Builder(this)
+            .setTitle("LOG 回報")
+            .setItems(new String[] {
+                "匯出 Markdown 報告（推薦）",
+                "匯出 TXT 報告",
+                "查看報告內容",
+                "清空本機 LOG"
+            }, (d, which) -> {
+                if (which == 0) shareSupportReport("md");
+                else if (which == 1) shareSupportReport("txt");
+                else if (which == 2) showTextDialog("LOG 回報內容", buildSupportReportMarkdown());
+                else confirm("確定清空本機 LOG？\n\n這不會清空聊天，也不會刪除 API KEY 或 SSH 設定。", () -> { store.clearAppLogs(); appLog("LOG 已清空後重新開始記錄"); toast("已清空本機 LOG"); });
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    private void shareSupportReport(String ext) {
+        try {
+            String report = "txt".equals(ext) ? buildSupportReportText() : buildSupportReportMarkdown();
+            report = maskSensitive(report);
+            File dir = new File(getCacheDir(), "reports");
+            if (!dir.exists()) dir.mkdirs();
+            String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.TAIWAN).format(new Date());
+            File file = new File(dir, "OracleCloudAI_report_" + stamp + "." + ext);
+            FileOutputStream out = new FileOutputStream(file);
+            out.write(report.getBytes(StandardCharsets.UTF_8));
+            out.close();
+
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("md".equals(ext) ? "text/markdown" : "text/plain");
+            send.putExtra(Intent.EXTRA_SUBJECT, "甲骨文雲端AI 問題回報 " + stamp);
+            send.putExtra(Intent.EXTRA_TEXT, "這是甲骨文雲端AI自動產生的問題回報。已自動遮蔽常見 Token / Key。");
+            send.putExtra(Intent.EXTRA_STREAM, uri);
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            appLog("REPORT 匯出｜" + file.getName());
+            startActivity(Intent.createChooser(send, "分享 LOG 回報"));
+        } catch (Exception e) {
+            appLog("REPORT 匯出失敗｜" + e.getClass().getSimpleName() + "：" + e.getMessage());
+            showTextDialog("匯出失敗", e.getClass().getSimpleName() + "：" + e.getMessage() + "\n\n你仍可選擇『查看報告內容』後複製文字貼給我。");
+        }
+    }
+
+    private String buildSupportReportText() {
+        return buildSupportReportMarkdown()
+            .replace("# ", "")
+            .replace("## ", "")
+            .replace("```text", "")
+            .replace("```", "");
+    }
+
+    private String buildSupportReportMarkdown() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("# 甲骨文雲端AI 問題回報\n\n");
+        sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
+        sb.append("- App 版本：v1.4.5\n");
+        sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
+
+        sb.append("## 目前模型設定\n\n");
+        sb.append("- 平台：").append(providerTitle(modelSettings.provider)).append(" (`").append(modelSettings.provider).append("`)\n");
+        sb.append("- 模型：").append(emptyDash(modelSettings.modelName)).append("\n");
+        sb.append("- Base URL：").append(maskUrl(modelSettings.baseUrl)).append("\n");
+        sb.append("- API Key：").append(hasText(modelSettings.apiKey) ? "已填入（已遮蔽）" : "未填入").append("\n");
+        sb.append("- Temperature：").append(modelSettings.temperature).append("\n");
+        sb.append("- 上下文保留字元數：").append(modelSettings.maxContextCharacters).append("\n\n");
+
+        sb.append("## Oracle SSH / 維修設定\n\n");
+        sb.append("- 主機：").append(emptyDash(serverSettings.host)).append("\n");
+        sb.append("- Port：").append(serverSettings.port).append("\n");
+        sb.append("- 使用者：").append(emptyDash(serverSettings.username)).append("\n");
+        sb.append("- 專案路徑：").append(emptyDash(serverSettings.projectPath)).append("\n");
+        sb.append("- Service：").append(emptyDash(serverSettings.serviceName)).append("\n");
+        sb.append("- Docker Container：").append(emptyDash(serverSettings.dockerContainer)).append("\n");
+        sb.append("- SSH 私鑰：").append(hasText(serverSettings.privateKey) ? "已填入（內容不匯出）" : "未填入").append("\n\n");
+
+        sb.append("## GitHub / Kaggle 狀態\n\n");
+        sb.append("- GitHub repo：").append(updateSettings.owner).append("/").append(updateSettings.repo).append("\n");
+        sb.append("- GitHub Token：").append(hasText(updateSettings.githubToken) ? "已填入（已遮蔽）" : "未填入").append("\n");
+        sb.append("- Kaggle 狀態：").append(runtimeConfig.kaggleState).append("\n");
+        sb.append("- Kaggle Base URL：").append(maskUrl(runtimeConfig.kaggleBaseUrl)).append("\n");
+        sb.append("- Kaggle 最後心跳：").append(emptyDash(runtimeConfig.kaggleLastHeartbeatUtc8)).append("\n");
+        sb.append("- Kaggle 估算剩餘：").append(formatMinutes(runtimeConfig.kaggleEstimatedRemainingMinutes)).append("\n\n");
+
+        sb.append("## 最近 App LOG\n\n```text\n");
+        sb.append(limit(store.loadAppLogs(), 50000));
+        sb.append("\n```\n\n");
+
+        sb.append("## 最近維修紀錄\n\n");
+        List<RepairHistory> history = store.loadHistory();
+        if (history.isEmpty()) sb.append("無\n\n");
+        else {
+            int count = 0;
+            for (RepairHistory h : history) {
+                if (count++ >= 10) break;
+                sb.append("### ").append(h.timestamp).append("｜").append(h.title).append("\n\n```text\n");
+                sb.append(limit(h.content, 8000)).append("\n```\n\n");
+            }
+        }
+
+        sb.append("## 最近聊天內容\n\n");
+        int start = Math.max(0, chatMessages.size() - 20);
+        if (chatMessages.isEmpty()) sb.append("無\n");
+        for (int i = start; i < chatMessages.size(); i++) {
+            ChatMessage cm = chatMessages.get(i);
+            sb.append("### ").append("user".equals(cm.role) ? "你" : "AI").append("\n\n```text\n");
+            sb.append(limit(cm.content, 6000)).append("\n```\n\n");
+        }
+
+        sb.append("## 備註\n\n");
+        sb.append("此報告由 App 自動產生，已嘗試遮蔽常見 GitHub/Kaggle/Google/NVIDIA Token 與私鑰內容。\n");
+        return maskSensitive(sb.toString());
+    }
+
+    private void appLog(String line) {
+        try {
+            if (store != null && line != null) store.appendAppLog(now() + "｜" + line);
+        } catch (Exception ignored) {}
+    }
+
+    private static boolean hasText(String s) { return s != null && s.trim().length() > 0; }
+
+    private static String maskUrl(String s) {
+        if (s == null || s.trim().isEmpty()) return "—";
+        String t = s.trim();
+        if (t.length() <= 80) return t;
+        return t.substring(0, 60) + "...";
+    }
+
+    private static String maskSensitive(String input) {
+        if (input == null) return "";
+        String x = input;
+        x = x.replaceAll("-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----", "[已遮蔽 SSH/PRIVATE KEY]");
+        x = x.replaceAll("github_pat_[A-Za-z0-9_]+", "[已遮蔽 GitHub Token]");
+        x = x.replaceAll("ghp_[A-Za-z0-9]+", "[已遮蔽 GitHub Token]");
+        x = x.replaceAll("KGAT_[A-Za-z0-9]+", "[已遮蔽 Kaggle Token]");
+        x = x.replaceAll("AIza[0-9A-Za-z_\\-]{20,}", "[已遮蔽 Google API Key]");
+        x = x.replaceAll("nvapi-[0-9A-Za-z_\\-]+", "[已遮蔽 NVIDIA API Key]");
+        x = x.replaceAll("sk-[0-9A-Za-z_\\-]{20,}", "[已遮蔽 API Key]");
+        return x;
+    }
+
     private void runTask(String begin, Task task) {
         setStatus(begin);
+        appLog("TASK 開始｜" + begin);
         bg.submit(() -> {
             try { task.run(); }
-            catch (Exception e) { ui.post(() -> { setStatus("發生錯誤"); showTextDialog("錯誤", e.getClass().getSimpleName() + "：" + e.getMessage()); }); }
+            catch (Exception e) {
+                appLog("ERROR｜" + begin + "｜" + e.getClass().getSimpleName() + "：" + e.getMessage());
+                ui.post(() -> { setStatus("發生錯誤"); showTextDialog("錯誤", e.getClass().getSimpleName() + "：" + e.getMessage()); });
+            }
         });
     }
 
@@ -971,6 +1131,7 @@ public class MainActivity extends Activity {
     }
 
     private void showTextDialog(String title, String text) {
+        appLog("DIALOG｜" + title + "｜" + limit(text == null ? "" : text, 1800));
         TextView tv = label(text == null ? "" : text, 13, false);
         tv.setTextIsSelectable(true);
         tv.setPadding(dp(12), dp(12), dp(12), dp(12));
@@ -1014,8 +1175,8 @@ public class MainActivity extends Activity {
     private LinearLayout row() { LinearLayout r = new LinearLayout(this); r.setOrientation(LinearLayout.HORIZONTAL); return r; }
     private LinearLayout.LayoutParams weight() { return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1); }
     private int dp(int n) { return (int) (n * getResources().getDisplayMetrics().density + 0.5f); }
-    private void setStatus(String s) { if (status != null) status.setText(s); }
-    private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_LONG).show(); }
+    private void setStatus(String s) { if (status != null) status.setText(s); appLog("STATUS｜" + s); }
+    private void toast(String s) { appLog("TOAST｜" + s); Toast.makeText(this, s, Toast.LENGTH_LONG).show(); }
 
     private int providerIndex(String code) {
         for (int i = 0; i < providerCodes.length; i++) if (providerCodes[i].equals(code)) return i;

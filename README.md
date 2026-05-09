@@ -327,3 +327,12 @@ Actions → Build Release APK → Run workflow
 ```
 
 `Build Debug APK` 仍會保留，用於排錯與臨時測試。
+
+
+## v1.4.5 LOG 回報與聊天按鈕改善
+
+- 新增「匯出LOG回報」功能，可產生 Markdown 或 TXT 報告。
+- 報告包含 App 狀態、模型平台、Oracle 設定摘要、Kaggle 狀態、最近 App LOG、維修紀錄、最近聊天內容。
+- 匯出時會自動遮蔽常見 GitHub / Kaggle / Google / NVIDIA Token 與私鑰內容。
+- 聊天頁的「送出訊息」改成大按鈕，避免在下方很難按。
+- 「清空聊天」移到第二排，並保留確認對話框，降低誤觸風險。

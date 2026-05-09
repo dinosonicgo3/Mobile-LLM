@@ -1,5 +1,5 @@
 {
-  "version": "v1.4.4-auto-release-on-push",
+  "version": "v1.4.5-log-report-chat-ui",
   "systemPrompt": "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。你可以進行一般聊天、程式修正、LLM API 設定、Kaggle/NVIDIA NIM/Google API 診斷，以及 Oracle Cloud 維修。你必須保持上下文，不得只根據最後一句話回答。",
   "extraDiagnosticCommands": [
     "date",
@@ -34,7 +34,7 @@
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "模型清單改為可搜尋、逐列顯示；各平台 API Key/Base URL/模型/常用模型分開保存；說明 Temperature 與上下文數值。",
+    "fix": "新增 LOG 回報匯出 md/txt；聊天送出按鈕改為大按鈕；清空聊天移到下方避免誤觸。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {
