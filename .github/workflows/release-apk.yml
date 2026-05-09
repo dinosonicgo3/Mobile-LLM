@@ -4,12 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag，可留空；留空會自動使用 app/build.gradle.kts 的 versionName，例如 v1.4.3'
+        description: 'Release tag，可留空；留空會自動使用 app/build.gradle.kts 的 versionName，例如 v1.4.4'
         required: false
         default: ''
+  push:
+    branches: [ main, master ]
+    paths-ignore:
+      - '**/*.md'
+      - 'README.md'
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-apk-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   release:
@@ -74,6 +83,8 @@ jobs:
           body: |
             這是正式 Release APK，不是 Debug APK。
 
+            這個 Release 由 GitHub Actions 自動建立或更新。
+
             用途：
             - 給手機穩定安裝/更新
             - 給 App 的「查看 Releases / 下載 APK」讀取
@@ -84,3 +95,4 @@ jobs:
             - 從固定簽章版之後，後續版本可直接覆蓋安裝並保留 App 資料。
           files: release/*.apk
           make_latest: true
+          overwrite_files: true

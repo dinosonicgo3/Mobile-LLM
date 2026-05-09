@@ -311,3 +311,19 @@ Actions → Build Release APK → Run workflow
 - App 的「查看 Releases / 下載 APK」會讀取這裡建立的 Release
 
 `Build Debug APK` 仍保留作為快速測試與排錯用途，但穩定使用建議跑 `Build Release APK`。
+
+
+## v1.4.4 自動 Release
+
+從此版開始，你用上傳腳本 push 新版專案到 GitHub 後，`Build Release APK` 會自動執行，不必每次手動點 `Run workflow`。
+
+標準流程變成：
+
+```text
+1. 解壓縮新版專案
+2. 用連續上傳腳本上傳
+3. 等 GitHub Actions 自動跑 Build Release APK
+4. 到 Releases 或 App 內更新頁下載 APK
+```
+
+`Build Debug APK` 仍會保留，用於排錯與臨時測試。
