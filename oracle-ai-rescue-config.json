@@ -1,5 +1,5 @@
 {
-  "version": "v1.6.6-fix-app-version-string-compile",
+  "version": "v1.6.8-force-compile-fix-marker",
   "systemPrompt": "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。你可以進行一般聊天、程式修正、LLM API 設定、Kaggle/NVIDIA NIM/Google API 診斷，以及 Oracle Cloud 維修。你必須保持上下文，不得只根據最後一句話回答。",
   "extraDiagnosticCommands": [
     "date",
@@ -34,7 +34,7 @@
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "修正 MainActivity.java LOG 報告中的 App 版本字串被錯誤換行，造成 unclosed string literal 編譯失敗。",
+    "fix": "強制修正工具 Agent 編譯錯誤：只保留一個 buildOracleDiagnosticPacketCommand、補 Pattern/Matcher imports、補 buildOracleBlankReplyFallback，並加入版本標記方便確認是否真的上傳。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {

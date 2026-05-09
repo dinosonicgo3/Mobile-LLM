@@ -667,3 +667,30 @@ sb.append("- App 版本：v1.6.0
 ```java
 sb.append("- App 版本：v1.6.6\n");
 ```
+
+
+## v1.6.7 編譯錯誤修正
+
+修正 Release 打包失敗：
+
+- `buildOracleDiagnosticPacketCommand()` 重複定義
+- `buildOracleBlankReplyFallback(OracleContextPack)` 缺失
+- `Pattern` / `Matcher` 未 import
+
+本版不改功能邏輯，只修正 Java 編譯錯誤。
+
+
+## v1.6.8 強制確認編譯修正版
+
+此版包含 v1.6.7 的三個編譯修正，並加入明確版本標記。
+
+靜態檢查結果應為：
+
+```text
+MainActivity.java 裡 buildOracleDiagnosticPacketCommand 定義數量 = 1
+已 import java.util.regex.Matcher
+已 import java.util.regex.Pattern
+已定義 buildOracleBlankReplyFallback(OracleContextPack)
+```
+
+如果 GitHub Actions 仍出現同一組錯誤，代表 GitHub 上跑的不是這份 v1.6.8 檔案，而是舊 commit / 舊 zip 沒有被覆蓋。

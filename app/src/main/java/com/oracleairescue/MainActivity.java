@@ -47,6 +47,8 @@ import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -94,7 +96,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v1.6.6｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v1.6.8｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -137,7 +139,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.6.6");
+        title.setText("甲骨文雲端AI  v1.6.8");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -747,6 +749,15 @@ public class MainActivity extends Activity {
         x = x.replaceAll("(?m)(^.*\\bDEBUG\\b.*$\\n?){5,}", "[大量 DEBUG 行已省略]\\n");
         x = x.replaceAll("(?m)(^.*\\bINFO\\b.*$\\n?){8,}", "[大量 INFO 行已省略]\\n");
         return limit(x, maxChars);
+    }
+
+
+    private String buildOracleBlankReplyFallback(OracleContextPack pack) {
+        String body = pack == null || pack.text == null ? "" : pack.text;
+        String preview = limit(body, 12000);
+        return "模型回覆空白，但 App 已經取得 Oracle Cloud 掃描資料。以下直接顯示掃描摘要，避免畫面空白：\n\n"
+            + "```text\n" + preview + "\n```\n\n"
+            + "建議：請改用 Google / NVIDIA 另一個模型重試，或到「維修」頁執行有限診斷封包，再匯出 LOG 給我。";
     }
 
     private String buildSystemPromptWithOracleContext(String basePrompt, OracleContextPack pack) {
@@ -1519,13 +1530,6 @@ public class MainActivity extends Activity {
         cal.add(java.util.Calendar.DAY_OF_MONTH, days);
         return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm 'UTC+8'", java.util.Locale.US).format(cal.getTime());
     }
-
-
-    private String buildOracleDiagnosticPacketCommand() {
-        return buildOracleDeepScanCommand();
-    }
-
-
     private ModelSettings googleVerifier31BSettings() {
         ModelSettings v = store.loadModelFor("gemini");
         if ((v.apiKey == null || v.apiKey.trim().isEmpty()) && "gemini".equals(modelSettings.provider)) {
@@ -2119,7 +2123,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v1.6.6\n");
+        sb.append("- App 版本：v1.6.8\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");
