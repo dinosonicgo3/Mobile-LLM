@@ -1,3 +1,7 @@
+# OracleAIRescue v2.2.0 原生工具調用 Runtime 修正版
+
+本版將雲端 Oracle Rescue Agent 改為通用 OpenAI-compatible native tools/tool_choice 工具循環。NVIDIA NIM / Google API 優先使用原生 tools 與串流工具調用；若端點不支援才退回短 JSON 相容協議。這是通用修正，不是只針對查專案：查找、讀檔、修程式、測試、刪除、停服務都走同一套工具循環。
+
 # 甲骨文雲端AI
 
 這是一個手機端 Android 救援 App 專案。它不需要 Oracle Cloud 上的 AI 正常運作；手機 App 會直接呼叫外部 LLM API，並透過 SSH 連到 Oracle Cloud 讀取 log、診斷問題、產生修復建議、讀取/修改檔案。

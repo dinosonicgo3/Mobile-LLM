@@ -1,0 +1,1 @@
+OracleAIRescue v2.2.0：雲端 Agent Runtime 改為 OpenAI-compatible native tools/tool_choice 工具循環；支援 streaming tool_calls，修正長 prompt 文字 JSON 假工具造成模型選工具也等待 2～5 分鐘的問題。

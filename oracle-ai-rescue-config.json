@@ -1,6 +1,6 @@
 {
-  "version": "v2.1.1-cloud-agent-runtime-buildconfig-fix",
-  "systemPrompt": "你是成熟穩定的 Oracle Cloud 程式維護 Agent，不是一般聊天機器人。你的核心目標是用 LLM API 協助使用者修改、維護、除錯 Oracle 雲端上的程式與服務。必須先規劃、主動查證目前雲端真實環境、遵循使用者指令、基於證據提出優化方案，且不可幻覺。工具結果高於模型推測；涉及專案/檔案/服務/流程查找、維修、刪除、更新、重啟、log 檢查時，必須先自主搜尋最新正確候選，再確認身份。修改檔案必須保留備份、測試、31B 後段驗證與失敗回滾。主模型不備援；後段驗證可以備援。需要 root 權限只用 sudo -n。",
+  "version": "v2.2.0-native-tool-calling-runtime",
+  "systemPrompt": "你是成熟穩定的 Oracle Cloud 程式維護 Agent。使用原生工具調用流程，不用長篇文字假工具。工具結果高於模型推測；需要查證時先用工具。主模型不備援；後段驗證可備援。修程式必須 backup→write→test→31B verify→rollback。完整權限允許 shell_exec/ssh_exec/remove_project/repair_file，root 權限使用 sudo -n，不要求密碼。",
   "extraDiagnosticCommands": [
     "date",
     "whoami",
@@ -34,7 +34,7 @@
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "v2.1.1 將程式維護 AI 規範對齊：手機端預設提示詞、Oracle Rescue Agent 系統規範、橋接工具提示、最終輸出靜態防幻覺檢查皆加入「先規劃、主動查證、工具結果優先、無幻覺、備份測試驗證回滾」。",
+    "fix": "v2.2.0 將雲端 Agent Runtime 改為通用 OpenAI-compatible native tools/tool_choice 工具循環；NVIDIA NIM / Google OpenAI 端點優先走原生工具調用與串流，失敗才使用短 JSON 相容工具協議。移除長篇 prompt 文字 JSON 工具主流程；查專案、修程式、讀檔、測試、刪除、服務控制皆走同一套工具循環。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {
@@ -71,7 +71,7 @@
     "principle": "先建立索引與錯誤摘要，再讓 LLM 要求下一個最小目標查詢，不整包丟 logs。"
   },
   "oracleAgent": {
-    "mode": "llm_direct_ssh_bridge_with_constitution_guard",
+    "mode": "cloud_agent_native_tools_runtime",
     "appAutoBootstrap": false,
     "maxSteps": 12,
     "tools": [
@@ -91,7 +91,11 @@
       "repair_file",
       "final"
     ],
-    "safety": "v2.1.1 規範對齊：完整權限 + 自主專案發現 + 維修前規劃 + 靜態防幻覺守門 + 31B 最終一致性驗證；模型不得跳過工具查證直接 final。"
+    "safety": "v2.2.0：單一雲端 Agent Runtime + 原生工具調用。模型決定工具，但不再以長篇文字 prompt 等完整 JSON 回覆；工具結果高於模型推測，改檔仍由 repair_file 強制備份、測試、31B 驗證、失敗回滾。",
+    "version": "v2.2.0",
+    "nativeTools": "enabled",
+    "streamingToolCalls": "enabled",
+    "legacyJsonToolFallback": "compatibility_only"
   },
   "repairVerification": {
     "enabled": true,
@@ -126,7 +130,7 @@
       "repair_file",
       "final"
     ],
-    "safety": "v2.1.1 對齊成熟編程 Agent 規範：任何維護任務先規劃與查證；工具結果高於模型推測；修檔 backup → write → test → 31B verify → rollback；最終回答前執行靜態防幻覺守門與 31B 一致性檢查。"
+    "safety": "v2.2.0 使用原生工具調用循環；任何維護任務由模型透過 tools 選擇工具，工具結果高於推測，修檔 backup → write → test → 31B verify → rollback。"
   },
   "modelPolicy": {
     "mainModelFallback": "disabled",
@@ -169,7 +173,7 @@
   },
   "programmingAgentConstitution": {
     "enabled": true,
-    "version": "v2.1.1",
+    "version": "v2.2.0",
     "principles": [
       "編程穩定",
       "動手前先規劃",
@@ -182,12 +186,15 @@
       "主模型不備援",
       "sudo -n 不要求密碼"
     ],
-    "finalGuard": "maintenance tasks cannot final without tool evidence; negative/completion claims must match transcript; 31B verifier still runs after static guard"
+    "finalGuard": "native tools/tool_choice loop + static guard; mutating repairs still require 31B verification."
   },
   "release_notes": [
-    "v2.1.1：正式採用雲端 Oracle Rescue Agent Runtime 單一路徑；App 僅負責部署、啟動、讀取 session log，不再使用 App 直連 SSH 雙主流程。新增 session_id、session log、LLM call start/ok/error、tool start/end、crash traceback 與失敗診斷留存。"
+    "v2.2.0：正式採用雲端 Oracle Rescue Agent Runtime 單一路徑，且核心 LLM 調用改為 OpenAI-compatible native tools/tool_choice 工具循環；串流讀取 tool_calls，修正文字 JSON 假工具造成模型選工具前長時間等待。"
   ],
   "cloud_agent_runtime": "primary_only",
   "direct_ssh_bridge": "disabled_as_main_flow",
-  "session_logging": "enabled: ~/.oracle_ai_rescue/sessions/<session_id>.log"
+  "session_logging": "enabled: ~/.oracle_ai_rescue/sessions/<session_id>.log",
+  "releaseNotes": [
+    "v2.2.0：重構為 NVIDIA NIM / Google OpenAI 相容原生 tools/tool_choice 工具循環，修正大模型在選工具前因長 prompt/文字 JSON 假工具造成 2～5 分鐘等待與逾時。"
+  ]
 }

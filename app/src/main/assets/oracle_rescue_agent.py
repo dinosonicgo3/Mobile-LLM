@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.1.0
+"""Oracle AI Rescue Agent v2.2.0
 Runs on the Oracle host. The Android app is only a remote controller/bridge.
 Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
 Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
@@ -801,6 +801,322 @@ def execute_tool(req, models, tool_obj):
     return {"ok": False, "output": "未知工具：" + tool}
 
 
+
+# =========================
+# v2.2.0 native tool-calling loop
+# =========================
+
+def tool_schemas():
+    """OpenAI-compatible tools schema used by NVIDIA NIM / Google OpenAI endpoint.
+
+    This is the single generic tool interface for all maintenance tasks. It is
+    not a special case for project search: the same loop handles discovery,
+    reading, repair, deletion, service control, tests and general shell work.
+    """
+    any_obj = {"type": "object", "additionalProperties": True}
+    return [
+        {"type":"function","function":{"name":"maintenance_plan","description":"Create an internal maintenance plan before risky or code-changing work. Does not modify files.","parameters":{"type":"object","properties":{"question":{"type":"string"},"discovery":{"type":"string"}},"required":[]}}},
+        {"type":"function","function":{"name":"discover_projects","description":"Discover current Oracle projects, files, services, processes, crontab and Docker evidence for a query. Use for any project/file/service/log existence or maintenance task before guessing.","parameters":{"type":"object","properties":{"query":{"type":"string"},"include_all":{"type":"boolean"}},"required":[]}}},
+        {"type":"function","function":{"name":"resolve_project_identity","description":"Read README/config/git/recent files from candidate paths and identify the correct/current project.","parameters":{"type":"object","properties":{"query":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}},"required":[]}}},
+        {"type":"function","function":{"name":"shell_exec","description":"Execute a full shell command on the Oracle host. Full authority is allowed; use sudo -n when root is needed and report permission errors.","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}},
+        {"type":"function","function":{"name":"ssh_exec","description":"Alias of shell_exec: execute a full shell command on the Oracle host.","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}},
+        {"type":"function","function":{"name":"read_file","description":"Read an absolute-path file from the Oracle host.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},
+        {"type":"function","function":{"name":"list_dir","description":"List a directory and shallow files from the Oracle host.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},
+        {"type":"function","function":{"name":"repair_file","description":"Repair a source/config file with automatic backup, write, syntax/test validation, 31B verification and rollback on failure. Use this for code/config changes.","parameters":{"type":"object","properties":{"path":{"type":"string"},"instruction":{"type":"string"}},"required":["path","instruction"]}}},
+        {"type":"function","function":{"name":"remove_project","description":"Fully remove/quarantine a project with backup, process/service/crontab cleanup and verification. Powerful/destructive.","parameters":{"type":"object","properties":{"target":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}},"required":[]}}},
+    ]
+
+
+def build_runtime_system(req):
+    extra = (req.get("system_prompt") or "").strip()
+    extra = limit(extra, 1800) if extra else ""
+    return (
+        "你是執行在 Oracle 主機本機的程式維護 Agent。你必須使用原生 tools/tool_calls 決定工具，不要用長篇文字假裝工具。"
+        "工具結果高於模型推測；需要查證真實環境時先呼叫工具。"
+        "你有完整權限，可用 shell_exec/ssh_exec 執行 rm、rm -rf、pkill、systemctl、docker、crontab、sudo -n；不可要求 sudo 密碼。"
+        "主模型不備援；若主模型失敗要報錯。NVIDIA NIM 大模型等待上限 300 秒。"
+        "修程式必須用 repair_file，讓程式強制 backup→write→test→31B verify→rollback。"
+        "高風險刪除或停服務前先用 maintenance_plan/discover_projects/resolve_project_identity 建立證據。"
+        "最終回答只根據工具結果與已執行內容，不可宣稱未做的測試或不存在的證據。"
+        + ("\n\n[額外規則摘要]\n" + extra if extra else "")
+    )
+
+
+def normalize_message_for_native(msg):
+    """Keep OpenAI-compatible messages compact and valid."""
+    role = msg.get("role")
+    if role == "assistant" and msg.get("tool_calls"):
+        return {"role":"assistant", "content": msg.get("content"), "tool_calls": msg.get("tool_calls")}
+    if role == "tool":
+        return {"role":"tool", "tool_call_id": msg.get("tool_call_id"), "content": limit(msg.get("content") or "", 20000)}
+    return {"role": role, "content": limit(msg.get("content") or "", 30000)}
+
+
+def openai_chat_completion(cfg, messages, timeout=300, tools=None, tool_choice="auto", stream=True, max_tokens=None):
+    if not cfg: raise RuntimeError("model config empty")
+    key = (cfg.get("api_key") or "").strip()
+    if not key: raise RuntimeError(f"missing api_key for {cfg.get('label') or cfg.get('provider')}")
+    model = (cfg.get("model") or cfg.get("modelName") or "").strip()
+    if not model: raise RuntimeError("missing model name")
+    provider = (cfg.get("provider") or "custom").strip()
+    base = (cfg.get("base_url") or cfg.get("baseUrl") or default_base(provider)).rstrip("/")
+    if not base: raise RuntimeError("missing base_url")
+    url = base + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [normalize_message_for_native(m) for m in messages],
+        "temperature": float(cfg.get("temperature", 0.0)),
+        "max_tokens": int(max_tokens if max_tokens is not None else cfg.get("max_tokens", 1024)),
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice or "auto"
+    if stream:
+        payload["stream"] = True
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", "Bearer " + key)
+    t0 = time.time()
+    log_event(f"NATIVE_LLM_CALL_START provider={provider} model={model} timeout={timeout}s stream={stream} tools={bool(tools)} messages={len(messages)}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if stream:
+                return read_streaming_chat(resp, provider, model, t0)
+            body = resp.read().decode("utf-8", "replace")
+    except TimeoutError as e:
+        log_event(f"NATIVE_LLM_CALL_TIMEOUT provider={provider} model={model} elapsed={time.time()-t0:.1f}s")
+        raise TimeoutError(f"LLM API read timed out after {timeout}s; provider={provider}; model={model}; base={base}") from e
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace") if e.fp else ""
+        log_event(f"NATIVE_LLM_CALL_HTTP_ERROR provider={provider} model={model} code={e.code} elapsed={time.time()-t0:.1f}s body_head={limit(body, 700)}")
+        raise RuntimeError(f"LLM API HTTP {e.code}; provider={provider}; model={model}; body={limit(body, 3000)}") from e
+    except Exception as e:
+        log_event(f"NATIVE_LLM_CALL_ERROR provider={provider} model={model} error={type(e).__name__}: {e} elapsed={time.time()-t0:.1f}s")
+        raise
+    root = json.loads(body)
+    msg = root["choices"][0].get("message") or {}
+    content = msg.get("content") or ""
+    tool_calls = msg.get("tool_calls") or []
+    log_event(f"NATIVE_LLM_CALL_OK provider={provider} model={model} elapsed={time.time()-t0:.1f}s content_length={len(content)} tool_calls={len(tool_calls)}")
+    return {"content": content, "tool_calls": tool_calls, "raw": root}
+
+
+def read_streaming_chat(resp, provider, model, t0):
+    content_parts = []
+    tool_acc = {}
+    raw_events = 0
+    for raw in resp:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line:
+            continue
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line or line == "[DONE]":
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        raw_events += 1
+        choices = ev.get("choices") or []
+        if not choices:
+            continue
+        delta = choices[0].get("delta") or {}
+        if delta.get("content"):
+            content_parts.append(delta.get("content") or "")
+        for tc in delta.get("tool_calls") or []:
+            idx = int(tc.get("index", 0))
+            cur = tool_acc.setdefault(idx, {"id":"", "type":"function", "function":{"name":"", "arguments":""}})
+            if tc.get("id"):
+                cur["id"] += tc.get("id") if not cur["id"] else ""
+            if tc.get("type"):
+                cur["type"] = tc.get("type")
+            fn = tc.get("function") or {}
+            if fn.get("name"):
+                cur["function"]["name"] += fn.get("name")
+            if fn.get("arguments"):
+                cur["function"]["arguments"] += fn.get("arguments")
+    content = "".join(content_parts)
+    tool_calls = [tool_acc[i] for i in sorted(tool_acc.keys())]
+    # Some providers omit id in streaming chunks; synthesize a stable id.
+    for i, tc in enumerate(tool_calls):
+        if not tc.get("id"):
+            tc["id"] = f"call_{int(time.time()*1000)}_{i}"
+    log_event(f"NATIVE_LLM_STREAM_DONE provider={provider} model={model} elapsed={time.time()-t0:.1f}s content_length={len(content)} tool_calls={len(tool_calls)} events={raw_events}")
+    return {"content": content, "tool_calls": tool_calls, "raw": None}
+
+
+def legacy_json_tool_call(cfg, messages, timeout=90):
+    """Compatibility fallback for endpoints/models that reject native tools.
+
+    This is not a special case. It is a short, generic tool-selection protocol
+    used only when the OpenAI-compatible tools field is unavailable.
+    """
+    short_tools = """
+只輸出 JSON，不要 Markdown，不要解釋。格式：
+{"tool":"discover_projects","args":{"query":"..."}}
+或 {"tool":"resolve_project_identity","args":{"query":"...","paths":["..."]}}
+或 {"tool":"shell_exec","args":{"command":"..."}}
+或 {"tool":"read_file","args":{"path":"/..."}}
+或 {"tool":"list_dir","args":{"path":"/..."}}
+或 {"tool":"repair_file","args":{"path":"/...","instruction":"..."}}
+或 {"tool":"remove_project","args":{"target":"...","paths":["..."]}}
+或 {"tool":"maintenance_plan","args":{"question":"..."}}
+或 {"tool":"final","answer":"..."}
+"""
+    compact = []
+    for m in messages[-6:]:
+        if m.get("role") == "tool":
+            compact.append({"role":"user", "content":"工具結果：\n" + limit(m.get("content") or "", 12000)})
+        elif m.get("role") == "assistant" and m.get("tool_calls"):
+            compact.append({"role":"assistant", "content":"已呼叫工具。"})
+        else:
+            compact.append({"role":m.get("role"), "content":limit(m.get("content") or "", 12000)})
+    compact.insert(0, {"role":"system", "content":"你是工具路由器。" + short_tools})
+    text = chat_once(dict(cfg, max_tokens=512), compact, timeout=timeout)
+    obj = parse_json_tool(text)
+    if not obj:
+        raise RuntimeError("legacy JSON tool call returned unparsable output: " + limit(text, 1000))
+    if obj.get("tool") == "final":
+        return {"content": obj.get("answer") or (obj.get("args") or {}).get("answer") or "", "tool_calls": []}
+    name = obj.get("tool") or ""
+    args = obj.get("args") or {}
+    return {"content":"", "tool_calls":[{"id":f"legacy_{int(time.time()*1000)}", "type":"function", "function":{"name":name, "arguments":json.dumps(args, ensure_ascii=False)}}]}
+
+
+def call_main_for_tools(req, cfg, messages):
+    # Native tool calls are the primary path. Keep the prompt compact and use a
+    # smaller output budget because a tool call should not require long prose.
+    timeout = int(req.get("tool_model_timeout_seconds", 300))
+    try:
+        return openai_chat_completion(cfg, messages, timeout=timeout, tools=tool_schemas(), tool_choice="auto", stream=True, max_tokens=int(req.get("tool_router_max_tokens", 768))), "native-tools-stream"
+    except Exception as e1:
+        log_event("NATIVE_TOOL_STREAM_FAILED " + type(e1).__name__ + ": " + str(e1))
+        try:
+            return openai_chat_completion(cfg, messages, timeout=timeout, tools=tool_schemas(), tool_choice="auto", stream=False, max_tokens=int(req.get("tool_router_max_tokens", 768))), "native-tools"
+        except Exception as e2:
+            log_event("NATIVE_TOOL_NONSTREAM_FAILED " + type(e2).__name__ + ": " + str(e2))
+            # Compatibility path: only for models/endpoints that reject tools.
+            return legacy_json_tool_call(cfg, messages, timeout=min(timeout, int(req.get("legacy_tool_router_timeout_seconds", 120)))), "legacy-json-tools"
+
+
+def parse_tool_call(tc):
+    fn = tc.get("function") or {}
+    name = (fn.get("name") or "").strip()
+    arg_text = fn.get("arguments") or "{}"
+    try:
+        args = json.loads(arg_text) if isinstance(arg_text, str) else (arg_text or {})
+    except Exception:
+        args = {}
+    return {"tool": name, "args": args}
+
+
+def is_mutating_tool(tool_name, args):
+    name = (tool_name or "").strip()
+    if name in ("repair_file", "remove_project"):
+        return True
+    if name in ("shell_exec", "ssh_exec"):
+        cmd = str((args or {}).get("command") or "").lower()
+        risky = ["rm ", "rm -rf", "mv ", "cp ", "tee ", ">", ">>", "pkill", "killall", "systemctl stop", "systemctl disable", "docker rm", "crontab", "chmod", "chown", "apt ", "pip install", "npm install"]
+        return any(x in cmd for x in risky)
+    return False
+
+
+def final_needs_31b(req, transcript, mutating_used):
+    if req.get("always_verify_final") is True:
+        return True
+    if mutating_used:
+        return True
+    text = "\n".join(transcript or "")
+    return "repair_file" in text or "remove_project" in text or "VALIDATION" in text
+
+
+def run_native_tool_loop(req, models):
+    question = req.get("question") or ""
+    cfg = models[0]
+    messages = [
+        {"role":"system", "content": build_runtime_system(req)},
+        {"role":"user", "content": question},
+    ]
+    transcript = []
+    used_modes = []
+    mutating_used = False
+    max_steps = int(req.get("max_steps", 12))
+    for step in range(1, max_steps + 1):
+        print(f"[oracle_rescue_agent] step={step} calling main model tool loop...", flush=True)
+        try:
+            resp, mode = call_main_for_tools(req, cfg, messages)
+            used_modes.append(mode)
+        except Exception as e:
+            print("# Oracle Rescue Agent 模型失敗\n")
+            print(f"步驟 {step} 呼叫主模型失敗：{type(e).__name__}: {e}\n")
+            print("主模型不使用備援；這是刻意設計，方便正確定位 API / 模型 / 工具提示錯誤。\n")
+            if transcript:
+                print("## 已取得工具結果\n```text")
+                print(limit("\n\n".join(transcript), 30000))
+                print("```")
+            return 1
+        tool_calls = resp.get("tool_calls") or []
+        content = resp.get("content") or ""
+        if tool_calls:
+            assistant_msg = {"role":"assistant", "content": content or None, "tool_calls": tool_calls}
+            messages.append(assistant_msg)
+            for tc in tool_calls:
+                obj = parse_tool_call(tc)
+                name = obj.get("tool")
+                args = obj.get("args") or {}
+                print(f"[oracle_rescue_agent] step={step} executing native tool={name}", flush=True)
+                log_event(f"NATIVE_TOOL_START step={step} tool={name}")
+                if is_mutating_tool(name, args):
+                    mutating_used = True
+                res = execute_tool(req, models, obj)
+                out = limit(res.get("output"), MAX_OBS)
+                log_event(f"NATIVE_TOOL_END step={step} tool={name} ok={res.get('ok')} output_length={len(str(res.get('output') or ''))}")
+                transcript.append(f"STEP {step} TOOL {name} ok={res.get('ok')}\n{out}")
+                messages.append({"role":"tool", "tool_call_id": tc.get("id") or f"call_{step}", "content": out})
+            continue
+        # No tool calls: treat content as final answer, guarded by static and risk-based 31B verification.
+        answer = content.strip()
+        if not answer:
+            messages.append({"role":"user", "content":"你沒有輸出工具呼叫也沒有最終答案。請使用工具或直接給出基於工具結果的最終回答。"})
+            continue
+        static_ok, static_reason = final_static_guard(question, transcript, answer)
+        if not static_ok:
+            messages.append({"role":"user", "content":"你的最終回答被程式化無幻覺規則阻擋：" + static_reason + "\n請呼叫必要工具，或根據已有工具結果修正答案。"})
+            transcript.append(f"STEP {step} STATIC_GUARD ok=False\n{static_reason}")
+            continue
+        if final_needs_31b(req, transcript, mutating_used):
+            final_check = verify_final_with_31b(req, question, "\n\n".join(transcript), answer)
+            if not final_verifier_passed(final_check):
+                print("# Oracle Rescue Agent 最終一致性驗證失敗\n")
+                print("31B 後段驗證判定最終回答可能忽略工具結果、存在幻覺或未遵循指令，因此已阻擋輸出。\n")
+                print("## 31B 驗證\n```text")
+                print(limit(final_check, 12000))
+                print("```\n")
+                if transcript:
+                    print("## 已取得工具結果\n```text")
+                    print(limit("\n\n".join(transcript), 30000))
+                    print("```")
+                return 1
+            print(answer)
+            print("\n---\n31B 最終一致性驗證：通過")
+            print("```text")
+            print(limit(final_check, 4000))
+            print("```")
+        else:
+            print(answer)
+            print("\n---\n最終回答依據：工具結果 + 程式化無幻覺檢查；未執行破壞性或改檔操作，因此未額外呼叫 31B。")
+        if used_modes:
+            print("\n---\n工具調用模式：" + ", ".join(dict.fromkeys(used_modes)))
+        return 0
+    print("# Oracle Rescue Agent 達到步驟上限\n")
+    print("```text")
+    print(limit("\n\n".join(transcript), 30000))
+    print("```")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--request", required=True)
@@ -808,120 +1124,16 @@ def main():
     req = json.loads(Path(ns.request).read_text(encoding="utf-8"))
     global SESSION_LOG_PATH
     SESSION_LOG_PATH = req.get("session_log_path") or str(Path.home() / ".oracle_ai_rescue" / "sessions" / ((req.get("session_id") or ("session_" + time.strftime("%Y%m%d_%H%M%S"))) + ".log"))
-    log_event("SESSION_START version=2.1.0 mode=" + str(req.get("runtime_mode") or "cloud-agent-runtime") + " session_id=" + str(req.get("session_id") or ""))
-    question = req.get("question") or ""
+    log_event("SESSION_START version=2.2.0 mode=" + str(req.get("runtime_mode") or "cloud-agent-native-tools") + " session_id=" + str(req.get("session_id") or ""))
     main_model = req.get("main_model") or {}
     models = [main_model] if main_model and (main_model.get("api_key") or "").strip() else []
-    # v2.1.0：主模型嚴禁備援；NVIDIA NIM / 大模型每次 API 回覆等待最多 300 秒，超過才報錯。
-    # 加入自主規劃、Project Discovery、工具一致性檢查，不增加主模型備援。
-    # 一般檢修、工具判斷、讀檔分析、產生修正版，都只允許使用 main_model。
-    # req.fallback_models 即使存在也會被忽略；備援只允許在 verify_with_31b() 後段驗證內使用。
     if not models:
         log_event("MAIN_MODEL_MISSING api_key_or_config_empty")
         print("# Oracle Rescue Agent 失敗\n\n主模型沒有可用 LLM API Key。主模型不使用備援；請修正目前選定模型的 API Key / Base URL / 模型名稱。")
         return 2
-    agent_constitution = """
-你正在 Oracle 主機本機的 Rescue Agent 內。App 只是遙控器，不會代你搜尋或判斷。你必須自己選工具。所有工具以 JSON 呼叫，不要用 Markdown code fence。
-
-【完整權限模式】
-你可以要求執行完整 shell 指令，包括 rm/rm -rf、pkill、killall、systemctl stop/disable、docker rm、crontab 清理、mv、cp、chmod、chown、sudo -n。不要要求使用者輸入 sudo 密碼；需要 root 權限時使用 sudo -n，若 sudo -n 失敗就回報權限錯誤。
-
-【編程維護 Agent 最高規範】
-你不是一般聊天助手。你的基本要求是：編程穩定、動手前先規劃、正確遵循使用者指令、提出基於證據的優化方案、無幻覺。這些規範是硬性流程，不是建議。
-1. 不可只照字面搜尋；遇到專案/檔案/服務/流程查找、維修、刪除、更新、重啟、log 檢查，必須優先使用 discover_projects，再用 resolve_project_identity 確認身份。
-2. 使用者輸入可能是中文代號、暱稱、縮寫、舊名稱；你必須自行查找目前雲端最新正確專案，不可要求使用者提供精準英文資料夾名。
-3. 工具結果高於模型推測；若工具找到候選路徑、服務、進程、crontab，你不得說沒有找到，只能列為候選並繼續查證。
-4. 動手前必須規劃：目標、候選專案、要改檔案/服務、備份點、測試方式、成功標準、回滾方式。可用 maintenance_plan 建立規劃。
-5. 修改程式必須使用 repair_file，保留 backup → write → test → 31B verify → rollback。
-6. 高風險操作如 rm -rf、remove_project、systemctl stop、pkill 前必須先備份或 quarantine。
-7. 主模型不得備援；後段 31B 驗證可以備援。NVIDIA NIM 為公共平台，大模型回覆較慢；每次 LLM API 呼叫等待上限為 300 秒，超過才視為 timeout。
-8. 需要 root 權限只用 sudo -n；失敗就回報權限錯誤，不要求密碼。
-9. 最終回答不得宣稱未執行的測試、未確認的刪除、未讀取的檔案或不存在的結果。
-10. 任何編程維護任務若尚未使用工具查證，不可直接 final；必須先使用 maintenance_plan、discover_projects、resolve_project_identity、ssh_exec/shell_exec、read_file 或 repair_file。
-11. 如果你的結論與工具結果衝突，必須修正結論，不可要求使用者相信模型推測。
-
-可用工具：
-{"tool":"maintenance_plan","args":{"question":"任務目標","discovery":"可選，已取得的 discover_projects 結果摘要"}}
-{"tool":"discover_projects","args":{"query":"使用者輸入/專案代號/任務關鍵字","include_all":false}}
-{"tool":"resolve_project_identity","args":{"query":"使用者輸入/專案代號","paths":["候選路徑，可省略"]}}
-{"tool":"ssh_exec","args":{"command":"任意 shell 指令，可含 sudo -n"}}
-{"tool":"shell_exec","args":{"command":"任意 shell 指令，可含 sudo -n"}}
-{"tool":"remove_project","args":{"target":"專案關鍵字","paths":["/path/to/remove"]}}
-{"tool":"read_file","args":{"path":"/任意/絕對路徑"}}
-{"tool":"list_dir","args":{"path":"/任意/絕對路徑"}}
-{"tool":"repair_file","args":{"path":"/任意/絕對路徑","instruction":"修正要求"}}
-{"tool":"final","answer":"最終回答"}
-
-修程式仍應使用 repair_file，因為它會自動備份、測試、31B 驗證、失敗回滾。移除專案可使用 remove_project 或直接 ssh_exec 完成。
-"""
-    system = (req.get("system_prompt") or "") + "\n\n" + agent_constitution
-    messages = [{"role":"system", "content":system}, {"role":"user", "content":"使用者問題：" + question + "\n請你直接選第一個最小工具。"}]
-    transcript = []
-    used_models = []
-    for step in range(1, int(req.get("max_steps", 10))+1):
-        print(f"[oracle_rescue_agent] step={step} calling main model...", flush=True)
-        try:
-            text, used, errs = chat_chain(models, messages, timeout=int(req.get("tool_model_timeout_seconds", 300)))
-            used_models.append(used)
-        except Exception as e:
-            print("# Oracle Rescue Agent 模型失敗\n")
-            print(f"步驟 {step} 呼叫主模型失敗：{type(e).__name__}: {e}\n")
-            print("主模型不使用備援；這是刻意設計，方便正確定位 API / 模型 / 工具提示錯誤。\n")
-            if transcript:
-                print("## 已取得工具結果\n")
-                print("```text")
-                print(limit("\n\n".join(transcript), 30000))
-                print("```")
-            return 1
-        obj = parse_json_tool(text)
-        if not obj:
-            messages.append({"role":"assistant", "content":text})
-            messages.append({"role":"user", "content":"你沒有輸出可解析 JSON。請只輸出 JSON 工具呼叫。"})
-            continue
-        if obj.get("tool") == "final":
-            answer = obj.get("answer") or (obj.get("args") or {}).get("answer") or ""
-            static_ok, static_reason = final_static_guard(question, transcript, answer)
-            if not static_ok:
-                messages.append({"role":"assistant", "content":json.dumps(obj, ensure_ascii=False)})
-                messages.append({"role":"user", "content":"你的 final 被程式化無幻覺規則阻擋：" + static_reason + "\n請根據規範選擇下一個必要工具，不要直接 final。"})
-                transcript.append(f"STEP {step} STATIC_GUARD ok=False\n{static_reason}")
-                continue
-            final_check = verify_final_with_31b(req, question, "\n\n".join(transcript), answer)
-            if not final_verifier_passed(final_check):
-                print("# Oracle Rescue Agent 最終一致性驗證失敗\n")
-                print("31B 後段驗證判定最終回答可能忽略工具結果、存在幻覺或未遵循指令，因此已阻擋輸出。\n")
-                print("## 31B 驗證\n")
-                print("```text")
-                print(limit(final_check, 12000))
-                print("```\n")
-                if transcript:
-                    print("## 已取得工具結果\n")
-                    print("```text")
-                    print(limit("\n\n".join(transcript), 30000))
-                    print("```")
-                return 1
-            print(answer)
-            print("\n---\n31B 最終一致性驗證：通過")
-            if final_check:
-                print("```text")
-                print(limit(final_check, 4000))
-                print("```")
-            if used_models:
-                print("\n---\n使用模型：" + ", ".join(dict.fromkeys(used_models)))
-            return 0
-        print(f"[oracle_rescue_agent] step={step} executing tool={obj.get('tool')}", flush=True)
-        log_event(f"TOOL_START step={step} tool={obj.get('tool')}")
-        res = execute_tool(req, models, obj)
-        log_event(f"TOOL_END step={step} tool={obj.get('tool')} ok={res.get('ok')} output_length={len(str(res.get('output') or ''))}")
-        obs = limit(res.get("output"), MAX_OBS)
-        transcript.append(f"STEP {step} TOOL {obj.get('tool')} ok={res.get('ok')}\n{obs}")
-        messages.append({"role":"assistant", "content":json.dumps(obj, ensure_ascii=False)})
-        messages.append({"role":"user", "content":"工具執行結果如下。請判斷下一步；若已足夠，輸出 final JSON。\n\n" + obs})
-    print("# Oracle Rescue Agent 達到步驟上限\n")
-    print("```text")
-    print(limit("\n\n".join(transcript), 30000))
-    print("```")
-    return 0
+    # v2.2.0：統一使用 OpenAI-compatible native tools/tool_choice tool loop。
+    # 不做單項特例；查專案、修程式、讀檔、測試、刪除、服務控制都走同一套工具循環。
+    return run_native_tool_loop(req, models)
 
 if __name__ == "__main__":
     try:
