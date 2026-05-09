@@ -336,3 +336,17 @@ Actions → Build Release APK → Run workflow
 - 匯出時會自動遮蔽常見 GitHub / Kaggle / Google / NVIDIA Token 與私鑰內容。
 - 聊天頁的「送出訊息」改成大按鈕，避免在下方很難按。
 - 「清空聊天」移到第二排，並保留確認對話框，降低誤觸風險。
+
+
+## v1.4.6 Release 打包修正
+
+v1.4.5 加入 AndroidX FileProvider 以支援 LOG 報告匯出，但 `gradle.properties` 尚未啟用 AndroidX，導致 Release 打包在 `checkReleaseAarMetadata` 失敗。
+
+此版已加入：
+
+```text
+android.useAndroidX=true
+android.enableJetifier=true
+```
+
+修正 Release APK 自動打包失敗問題。
