@@ -815,6 +815,13 @@ NVIDIA NIM Gemma 4 31B
 - Oracle 端 `oracle_rescue_agent.py`
 
 
+## v2.0.4 完整權限修正版 Oracle Rescue Agent
+
+- 修正 GitHub Actions Release APK 可能因 LlmClient 重複宣告而打包失敗。
+- 手機端舊 SSH 橋接工具與雲端 Agent 完整權限規則一致化：ssh_exec / shell_exec 不再只讀限制。
+- 手機端橋接補上 remove_project 工具。
+- 保持主模型不備援；只允許 31B 後段驗證 Google → NVIDIA NIM 備援。
+
 ## v2.0.3 完整權限 Oracle Rescue Agent
 
 依使用者要求，Oracle Rescue Agent 改為完整權限模式。

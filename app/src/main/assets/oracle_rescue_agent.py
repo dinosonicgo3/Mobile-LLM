@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.0.3
+"""Oracle AI Rescue Agent v2.0.4
 Runs on the Oracle host. The Android app is only a remote controller/bridge.
 Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
 Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
@@ -376,7 +376,7 @@ def verify_with_31b(req, stage, path, instruction, original, proposed, diff, tes
 
 def repair_file(req, models, path, instruction):
     p = safe_path(path)
-    if not p: return {"ok": False, "output": "repair_file 被拒絕：路徑需在 /home、/opt、/srv、/var/www 內。"}
+    if not p: return {"ok": False, "output": "repair_file 被拒絕：路徑必須是絕對路徑，且不能包含控制字元。"}
     try:
         original = Path(p).read_text(encoding="utf-8", errors="replace")
     except Exception as e:

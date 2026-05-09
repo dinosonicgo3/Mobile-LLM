@@ -96,7 +96,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v2.0.3｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v2.0.4｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -139,7 +139,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v2.0.3");
+        title.setText("甲骨文雲端AI  v2.0.4");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -428,7 +428,7 @@ public class MainActivity extends Activity {
 
     private org.json.JSONObject buildRescueAgentRequest(String userText) throws Exception {
         org.json.JSONObject root = new org.json.JSONObject();
-        root.put("version", "2.0.3");
+        root.put("version", "2.0.4");
         root.put("question", userText);
         root.put("system_prompt", runtimeConfig == null ? "" : runtimeConfig.systemPrompt);
         root.put("max_steps", 10);
@@ -476,15 +476,19 @@ public class MainActivity extends Activity {
             + "每次只呼叫一個最小工具；工具結果回來後再判斷下一步。"
             + "如果要修程式，先用工具定位專案、讀取檔案，再用 repair_file 工具啟動安全修復流水線。"
             + "repair_file 會由 App 自動備份、寫回、測試、Gemma 4 31B 驗證；驗證失敗會回滾。"
+            + "需要 root 權限時使用 sudo -n；sudo -n 失敗就回報權限錯誤，不要要求使用者輸入 sudo 密碼。"
             + "禁止要求整包 logs；只查單一 service/container/file。"
             + "\n\n工具呼叫請優先輸出 JSON，且不要包在 Markdown code fence：\n"
             + "{\"tool\":\"ssh_exec\",\"args\":{\"command\":\"pwd && ls -la /home/ubuntu\"}}\n"
+            + "{\"tool\":\"shell_exec\",\"args\":{\"command\":\"sudo -n systemctl stop example.service || true\"}}\n"
+            + "{\"tool\":\"remove_project\",\"args\":{\"target\":\"openclaw\",\"paths\":[\"/home/ubuntu/openclaw\"]}}\n"
             + "{\"tool\":\"read_file\",\"args\":{\"path\":\"/home/ubuntu/project/main.py\"}}\n"
             + "{\"tool\":\"repair_file\",\"args\":{\"path\":\"/home/ubuntu/project/main.py\",\"instruction\":\"根據錯誤 log 修正啟動失敗\"}}\n"
             + "{\"tool\":\"final\",\"answer\":\"你的最終回答\"}\n\n"
             + "也支援舊格式：\nTOOL: ssh_exec\nARGS: command=...\n\n"
             + "可用工具：\n"
-            + "ssh_exec：執行只讀安全 SSH 指令。禁止 sudo、rm、mv、cp、chmod、chown、kill、restart、start、stop、install、tee、重導向寫入等。\n"
+            + "ssh_exec / shell_exec：完整權限執行任意 shell 指令，可含 rm/rm -rf、sudo -n、pkill、killall、systemctl stop/disable、docker rm、crontab 清理。\n"
+            + "remove_project：完整移除/隔離專案，會嘗試備份、停止服務、殺進程、清 crontab、搬移到 quarantine。\n"
             + "list_projects：快速列專案候選摘要。\n"
             + "list_docker：列 Docker 容器與 compose 摘要。\n"
             + "list_services：列 systemd 服務與 failed services 摘要。\n"
@@ -623,16 +627,26 @@ public class MainActivity extends Activity {
         int timeout = 90000;
         switch (call.tool) {
             case "ssh_exec":
+            case "shell_exec":
             case "run_safe": {
                 String c = call.arg("command").trim();
-                if (!isSafeReadOnlyToolCommand(c)) return call.tool + " 被拒絕：只允許讀取型安全指令，且禁止 sudo/寫入/刪除/重啟/安裝。";
+                if (c.isEmpty()) return call.tool + " 需要 args.command。";
+                if (c.length() > 12000) return call.tool + " 被拒絕：指令過長。";
                 command = c;
+                timeout = 300000;
+                break;
+            }
+            case "remove_project": {
+                String target = safeToolArg(call.arg("target"));
+                String paths = call.raw == null ? "" : call.raw;
+                command = buildRemoveProjectCommand(target, paths);
+                timeout = 600000;
                 break;
             }
             case "repair_file": {
                 String path = safeToolPath(call.arg("path"));
                 String instruction = call.arg("instruction");
-                if (path.isEmpty()) return "repair_file 需要 args.path，且路徑需在 /home、/opt、/srv、/var/www 內。";
+                if (path.isEmpty()) return "repair_file 需要 args.path，且路徑必須是絕對路徑。";
                 if (instruction.trim().isEmpty()) instruction = "根據目前工具結果修正此檔案，保留原功能，避免新增風險。";
                 return runBridgeRepairFile(path, instruction);
             }
@@ -677,14 +691,14 @@ public class MainActivity extends Activity {
             }
             case "list_dir": {
                 String path = safeToolPath(call.arg("path"));
-                if (path.isEmpty()) return "list_dir 需要 ARGS: path=<目錄>，且路徑需在 /home、/opt、/srv、/var/www 內。";
+                if (path.isEmpty()) return "list_dir 需要 ARGS: path=<目錄>，且路徑必須是絕對路徑。";
                 command = "set +e\n"
                     + "cd " + DiagnosticCommands.shellQuote(path) + " 2>/dev/null && pwd && ls -la | head -n 80 && echo '==== shallow files ====' && find . -maxdepth 2 -type f | head -n 120\n";
                 break;
             }
             case "read_file": {
                 String path = safeToolPath(call.arg("path"));
-                if (path.isEmpty()) return "read_file 需要 ARGS: path=<檔案路徑>，且路徑需在 /home、/opt、/srv、/var/www 內。";
+                if (path.isEmpty()) return "read_file 需要 ARGS: path=<檔案路徑>，且路徑必須是絕對路徑。";
                 command = "set +e\n"
                     + "echo '==== file metadata ===='\n"
                     + "(ls -lh " + DiagnosticCommands.shellQuote(path) + " 2>/dev/null || true)\n"
@@ -735,9 +749,53 @@ public class MainActivity extends Activity {
 
     private String safeToolPath(String s) {
         String p = safeToolArg(s);
-        if (p.contains("..") || p.contains(";") || p.contains("|") || p.contains("&") || p.contains(">") || p.contains("<")) return "";
-        if (!(p.startsWith("/home/") || p.startsWith("/opt/") || p.startsWith("/srv/") || p.startsWith("/var/www/"))) return "";
+        if (p.isEmpty() || !p.startsWith("/")) return "";
+        if (p.indexOf('\0') >= 0 || p.contains("\n") || p.contains("\r")) return "";
+        if (p.contains(";") || p.contains("|") || p.contains("&") || p.contains(">") || p.contains("<")) return "";
         return p;
+    }
+
+    private String buildRemoveProjectCommand(String target, String pathsRaw) {
+        StringBuilder py = new StringBuilder();
+        py.append("python3 - <<'PY'\n");
+        py.append("import os, re, shlex, subprocess, time\n");
+        py.append("from pathlib import Path\n");
+        py.append("target = ").append(javaStringLiteral(target == null ? "" : target)).append("\n");
+        py.append("paths_raw = ").append(javaStringLiteral(pathsRaw == null ? "" : pathsRaw)).append("\n");
+        py.append("stamp=time.strftime('%Y%m%d_%H%M%S')\n");
+        py.append("safe=re.sub(r'[^A-Za-z0-9_.-]+','_', target or 'manual_paths').strip('_') or 'target'\n");
+        py.append("base=Path.home()/'.oracle_ai_rescue'; q=base/'quarantine'/f'{safe}_{stamp}'; b=base/'backups'; q.mkdir(parents=True, exist_ok=True); b.mkdir(parents=True, exist_ok=True)\n");
+        py.append("def run(c,t=180):\n    print('\\n$ '+c)\n    try:\n        p=subprocess.run(c,shell=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=t)\n        print('exitCode='+str(p.returncode))\n        if p.stdout: print('--- stdout ---\\n'+p.stdout[:12000])\n        if p.stderr: print('--- stderr ---\\n'+p.stderr[:12000])\n        return p.returncode==0\n    except Exception as e:\n        print(type(e).__name__+': '+str(e)); return False\n");
+        py.append("paths=[]\n");
+        py.append("for x in re.findall(r'/[^,\\]\\\"\\' ]+', paths_raw):\n    if x not in paths: paths.append(x)\n");
+        py.append("if target:\n    cmd='find /home /opt /srv /var/www /etc/systemd/system -maxdepth 7 \\\\( -iname '+shlex.quote('*'+target+'*')+' -o -path '+shlex.quote('*'+target+'*')+' \\\\) 2>/dev/null | head -n 200'\n    p=subprocess.run(cmd,shell=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=120)\n    for line in p.stdout.splitlines():\n        if line.startswith('/') and line not in paths: paths.append(line)\n");
+        py.append("print('==== FULL AUTHORITY REMOVE PROJECT ====')\nprint('target=',target)\nprint('paths=',paths)\n");
+        py.append("if target:\n    for c in ['pkill -f '+shlex.quote(target), 'sudo -n pkill -f '+shlex.quote(target), 'killall '+shlex.quote(target)+' 2>/dev/null', 'sudo -n killall '+shlex.quote(target)+' 2>/dev/null']:\n        run(c,60)\n    units=subprocess.run(\"systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}'\",shell=True,text=True,stdout=subprocess.PIPE).stdout.splitlines()\n    for u in [u.strip() for u in units if target.lower() in u.lower()][:50]:\n        run('sudo -n systemctl stop '+shlex.quote(u),60); run('sudo -n systemctl disable '+shlex.quote(u),60)\n    run('TMP=$(mktemp); crontab -l 2>/dev/null | grep -vi '+shlex.quote(target)+' > $TMP; crontab $TMP; RC=$?; rm -f $TMP; exit $RC',60)\n");
+        py.append("for sp in paths:\n    if not sp.startswith('/'): continue\n    name=re.sub(r'[^A-Za-z0-9_.-]+','_',sp.strip('/')) or 'path'\n    bf=b/f'{safe}_{name}_{stamp}.tar.gz'; dest=q/name\n    print('\\n==== PATH '+sp+' ====')\n    backup='tar -czf '+shlex.quote(str(bf))+' -C / '+shlex.quote(sp.lstrip('/'))\n    if not run(backup,300): run('sudo -n '+backup,300)\n    mv='mkdir -p '+shlex.quote(str(q))+' && mv -- '+shlex.quote(sp)+' '+shlex.quote(str(dest))\n    if not run(mv,180): run('sudo -n '+mv,180)\n");
+        py.append("if target:\n    run(\"echo '[process]'; ps aux | grep -i \"+shlex.quote(target)+\" | grep -v grep || true; echo '[paths]'; find /home /opt /srv /var/www /etc/systemd/system -maxdepth 7 -iname \"+shlex.quote('*'+target+'*')+\" 2>/dev/null | head -n 100 || true; echo '[services]'; systemctl list-units --type=service --all 2>/dev/null | grep -i \"+shlex.quote(target)+\" || true; echo '[crontab]'; crontab -l 2>/dev/null | grep -i \"+shlex.quote(target)+\" || true\",120)\n");
+        py.append("print('quarantine=', q)\nprint('backups=', b)\n");
+        py.append("PY");
+        return py.toString();
+    }
+
+    private static String javaStringLiteral(String s) {
+        if (s == null) return "\"\"";
+        StringBuilder out = new StringBuilder("\"");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': out.append("\\\\"); break;
+                case '"': out.append("\\\""); break;
+                case '\n': out.append("\\n"); break;
+                case '\r': out.append("\\r"); break;
+                case '\t': out.append("\\t"); break;
+                default:
+                    if (c < 32) out.append(String.format(Locale.ROOT, "\\u%04x", (int)c));
+                    else out.append(c);
+            }
+        }
+        out.append("\"");
+        return out.toString();
     }
 
     private int parseToolInt(String s, int def) {
@@ -1927,16 +1985,14 @@ public class MainActivity extends Activity {
         }));
         box.addView(toolSelfTest);
 
-        addSection(box, "安全執行指令");
-        EditText cmd = edit("輸入要執行的指令，例如 systemctl status xxx --no-pager", true);
+        addSection(box, "完整權限執行指令");
+        EditText cmd = edit("輸入要執行的指令，例如 sudo -n systemctl stop xxx.service 或 rm -rf /home/ubuntu/old_project", true);
         cmd.setMinLines(2); box.addView(cmd);
-        Button run = button("檢查安全後執行");
+        Button run = button("完整權限執行");
         run.setOnClickListener(v -> {
             String c = cmd.getText().toString().trim();
             if (c.isEmpty()) return;
-            if (RepairSafety.isDangerous(c)) { showTextDialog("已阻擋危險指令", "此指令包含高風險操作，App 不會執行：\n" + c); return; }
-            if (c.contains("sudo") && !serverSettings.allowSudoCommands) { toast("尚未在 Oracle 設定頁允許 sudo 指令"); return; }
-            confirm("確定執行？\n\n" + c, () -> runTask("正在執行指令…", () -> {
+            confirm("完整權限模式會直接在 Oracle 主機執行此指令。\n\n需要 root 權限時請使用 sudo -n；若 sudo -n 失敗，App 只回報權限錯誤，不會要求密碼。\n\n確定執行？\n\n" + c, () -> runTask("正在完整權限執行指令…", () -> {
                 CommandResult r = new SshClient(serverSettings).runCommand(c, 120000);
                 store.appendHistory(new RepairHistory(now(), "執行指令", r.asText()));
                 ui.post(() -> showTextDialog("指令結果", r.asText()));
@@ -2345,7 +2401,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v2.0.3\n");
+        sb.append("- App 版本：v2.0.4\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");

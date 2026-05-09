@@ -1,0 +1,1 @@
+OracleAIRescue v2.0.4：修正 GitHub Actions 打包失敗、手機端 SSH 橋接完整權限一致化、加入 remove_project 橋接、保留主模型不備援與 31B 驗證備援。

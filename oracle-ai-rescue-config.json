@@ -1,5 +1,5 @@
 {
-  "version": "v2.0.3-full-authority-oracle-rescue-agent",
+  "version": "v2.0.4-full-authority-fix",
   "systemPrompt": "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。你可以進行一般聊天、程式修正、LLM API 設定、Kaggle/NVIDIA NIM/Google API 診斷，以及 Oracle Cloud 維修。你必須保持上下文，不得只根據最後一句話回答。",
   "extraDiagnosticCommands": [
     "date",
@@ -76,6 +76,8 @@
     "maxSteps": 8,
     "tools": [
       "ssh_exec",
+      "shell_exec",
+      "remove_project",
       "list_projects",
       "list_docker",
       "list_services",
@@ -86,7 +88,7 @@
       "repair_file",
       "final"
     ],
-    "safety": "App 僅橋接與安全限制；修正由 LLM 判斷，寫回由 repair_file 自動備份、測試、31B 驗證、失敗回滾。"
+    "safety": "完整權限模式：ssh_exec/shell_exec 可執行任意 shell；需要 root 權限時使用 sudo -n，不要求密碼。修程式仍透過 repair_file 備份、測試、31B 驗證與失敗回滾。"
   },
   "repairVerification": {
     "enabled": true,
@@ -110,13 +112,15 @@
     "remotePath": "~/.oracle_ai_rescue/oracle_rescue_agent.py",
     "architecture": "Android App = remote controller; Oracle rescue_agent.py = agent runtime; LLM decides tools on Oracle host.",
     "tools": [
-      "ssh_exec(read-only)",
+      "ssh_exec",
+      "shell_exec",
+      "remove_project",
       "read_file",
       "list_dir",
       "repair_file",
       "final"
     ],
-    "safety": "write operations only through repair_file with backup, validation, 31B verification, rollback on failure"
+    "safety": "完整權限模式：允許移除專案、刪檔、停止/停用服務、殺進程、Docker 清理、crontab 清理；sudo 使用 sudo -n。修檔保留 backup → write → test → 31B verify → rollback。"
   },
   "modelPolicy": {
     "mainModelFallback": "disabled",
