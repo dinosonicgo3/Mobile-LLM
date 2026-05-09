@@ -1,5 +1,5 @@
 {
-  "version": "v2.0.0-oracle-rescue-agent-runtime",
+  "version": "v2.0.1-install-fix-versionCode-50",
   "systemPrompt": "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。你可以進行一般聊天、程式修正、LLM API 設定、Kaggle/NVIDIA NIM/Google API 診斷，以及 Oracle Cloud 維修。你必須保持上下文，不得只根據最後一句話回答。",
   "extraDiagnosticCommands": [
     "date",
@@ -34,7 +34,7 @@
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "重構為 Oracle 端 Rescue Agent：Android App 只負責 SSH 部署/啟動；LLM 在 Oracle 主機本機工具迴圈中分析、讀檔、修檔、測試、31B 驗證與回滾。",
+    "fix": "修正 v2.0.0 versionCode=40 低於 v1.7.1 versionCode=41，導致 Android 視為降版而套件安裝失敗。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {
