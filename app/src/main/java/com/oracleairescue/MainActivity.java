@@ -90,7 +90,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v1.5.5｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v1.5.7｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -133,7 +133,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.5.5");
+        title.setText("甲骨文雲端AI  v1.5.7");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -283,6 +283,11 @@ public class MainActivity extends Activity {
         chatMessages.add(new ChatMessage("user", text));
         renderChatLog();
         runTask("正在呼叫模型…", () -> {
+            OracleContextPack oraclePack = maybeCollectOracleContext(text);
+            if (oraclePack.used) {
+                ui.post(() -> setStatus("已自動讀取 Oracle Cloud 現況，正在交給模型分析…"));
+            }
+
             if ("local_gemma".equals(modelSettings.provider)) {
                 String modelPath = localGemmaPathFor(modelSettings.modelName);
                 File modelFile = new File(modelPath);
@@ -290,6 +295,7 @@ public class MainActivity extends Activity {
                     throw new IllegalStateException("本機模型尚未下載完成：" + modelSettings.modelName + "\n請到「本機」頁一鍵下載 E2B 或 E4B。");
                 }
                 String localPrompt = buildLocalPrompt(chatMessages, modelSettings.maxContextCharacters);
+                if (oraclePack.used) localPrompt = localPrompt + "\n\n[Oracle Cloud 自動診斷資料]\n" + oraclePack.text;
                 String reply = LocalGemmaRunner.generate(this, modelPath, localPrompt, runtimeConfig.systemPrompt);
                 reply = cleanModelThoughts(reply);
                 String finalReply = reply;
@@ -309,7 +315,10 @@ public class MainActivity extends Activity {
                 runtimeConfig = cfg;
                 applyKaggleConfig(cfg, false);
             }
-            List<ChatMessage> payload = buildContextMessages(runtimeConfig.systemPrompt, chatMessages, modelSettings.maxContextCharacters);
+            List<ChatMessage> payload = buildContextMessages(buildSystemPromptWithOracleContext(runtimeConfig.systemPrompt, oraclePack), chatMessages, modelSettings.maxContextCharacters);
+            if (oraclePack.used) {
+                payload.add(new ChatMessage("user", "以下是 App 已透過 SSH 自動讀取的 Oracle Cloud 真實狀態，請根據這些資料回答使用者，不要再要求使用者自己去 OCI Console 查。\n\n" + oraclePack.text));
+            }
             String reply = llm.sendChat(modelSettings.copy(), payload);
             ui.post(() -> {
                 appLog("CHAT 收到回覆｜長度：" + (reply == null ? 0 : reply.length()));
@@ -319,6 +328,136 @@ public class MainActivity extends Activity {
                 setStatus("回覆完成");
             });
         });
+    }
+
+
+    private OracleContextPack maybeCollectOracleContext(String userText) {
+        OracleContextPack pack = new OracleContextPack();
+        String q = userText == null ? "" : userText.toLowerCase(Locale.ROOT);
+        boolean wantsOracle =
+            q.contains("甲骨文") || q.contains("oracle") || q.contains("oci") ||
+            q.contains("雲端") || q.contains("主機") || q.contains("伺服器") ||
+            q.contains("專案") || q.contains("服務") || q.contains("docker") ||
+            q.contains("container") || q.contains("容器") || q.contains("log") ||
+            q.contains("日誌") || q.contains("維修") || q.contains("故障") ||
+            q.contains("部署") || q.contains("更新") || q.contains("重啟") ||
+            q.contains("檢查") || q.contains("狀態");
+
+        if (!wantsOracle) return pack;
+
+        if (serverSettings == null || serverSettings.host == null || serverSettings.host.trim().isEmpty()) {
+            pack.used = true;
+            pack.text = "App 判斷這是 Oracle Cloud 相關問題，但 Oracle SSH 主機尚未設定。";
+            return pack;
+        }
+        if ((serverSettings.privateKey == null || serverSettings.privateKey.trim().isEmpty()) &&
+            (serverSettings.password == null || serverSettings.password.trim().isEmpty())) {
+            pack.used = true;
+            pack.text = "App 判斷這是 Oracle Cloud 相關問題，但 SSH 私鑰/密碼尚未設定。";
+            return pack;
+        }
+
+        try {
+            appLog("ORACLE AUTO CONTEXT｜開始 SSH 探測｜host=" + serverSettings.host + "｜query=" + limit(userText, 160));
+            String command = buildOracleAutoContextCommand();
+            CommandResult r = new SshClient(serverSettings).runCommand(command, 180000);
+            pack.used = true;
+            pack.text = "SSH 目標：" + serverSettings.username + "@" + serverSettings.host + ":" + serverSettings.port + "\n"
+                + "使用者問題：" + userText + "\n"
+                + "SSH exitCode：" + r.exitCode + "\n\n"
+                + maskSensitive(limit(r.asText(), 50000));
+            appLog("ORACLE AUTO CONTEXT｜完成｜exit=" + r.exitCode + "｜長度=" + pack.text.length());
+            return pack;
+        } catch (Exception e) {
+            pack.used = true;
+            pack.text = "App 已嘗試自動 SSH 連上 Oracle Cloud，但失敗："
+                + e.getClass().getSimpleName() + "：" + e.getMessage()
+                + "\n\n請根據這個錯誤協助使用者修正 SSH / Oracle 設定。";
+            appLog("ORACLE AUTO CONTEXT｜失敗｜" + e.getClass().getSimpleName() + "：" + e.getMessage());
+            return pack;
+        }
+    }
+
+    private String buildOracleAutoContextCommand() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("set +e\n");
+        sb.append("echo '==== ORACLE_AUTO_CONTEXT_START ===='\n");
+        sb.append("echo 'time='$(date '+%F %T %Z')\n");
+        sb.append("echo 'whoami='$(whoami)\n");
+        sb.append("echo 'hostname='$(hostname)\n");
+        sb.append("echo 'pwd='$(pwd)\n");
+        sb.append("echo '==== OS ===='\n");
+        sb.append("(cat /etc/os-release 2>/dev/null || uname -a)\n");
+        sb.append("echo '==== UPTIME / MEMORY / DISK ===='\n");
+        sb.append("(uptime || true)\n");
+        sb.append("(free -h || true)\n");
+        sb.append("(df -h / /home /opt 2>/dev/null || df -h || true)\n");
+        sb.append("echo '==== NETWORK PORTS ===='\n");
+        sb.append("(ss -lntp 2>/dev/null || netstat -lntp 2>/dev/null || true)\n");
+        sb.append("echo '==== COMMON PROJECT DIRECTORIES ===='\n");
+        sb.append("for d in /home/ubuntu /home/opc /opt /srv /var/www; do if [ -d \"$d\" ]; then echo \"---- $d ----\"; find \"$d\" -maxdepth 3 \\( -name .git -o -name docker-compose.yml -o -name compose.yml -o -name package.json -o -name pyproject.toml -o -name requirements.txt -o -name app.py -o -name main.py -o -name Dockerfile \\) 2>/dev/null | sed 's#/.git$##' | head -n 120; fi; done\n");
+        sb.append("echo '==== AUTO PROJECT DISCOVERY / LATEST CANDIDATES ===='\n");
+        sb.append("TMP_PROJECTS=$(mktemp)\n");
+        sb.append("for root in /home/ubuntu /home/opc /opt /srv /var/www; do [ -d \"$root\" ] || continue; find \"$root\" -maxdepth 5 \\( -name .git -o -name docker-compose.yml -o -name compose.yml -o -name package.json -o -name pyproject.toml -o -name requirements.txt -o -name Dockerfile -o -name app.py -o -name main.py \\) -print 2>/dev/null; done | sed -E 's#/(.git|docker-compose.yml|compose.yml|package.json|pyproject.toml|requirements.txt|Dockerfile|app.py|main.py)$##' | sort -u > $TMP_PROJECTS\n");
+        sb.append("while read p; do [ -d \"$p\" ] || continue; mt=$(find \"$p\" -maxdepth 3 -type f -printf '%T@\\n' 2>/dev/null | sort -nr | head -n1); [ -z \"$mt\" ] && mt=0; printf '%s\\t%s\\n' \"$mt\" \"$p\"; done < $TMP_PROJECTS | sort -nr | head -n 20 | while IFS=$'\\t' read mt p; do echo \"---- PROJECT: $p ----\"; date -d @${mt%.*} '+last_modified=%F %T' 2>/dev/null || true; ls -la \"$p\" 2>/dev/null | head -n 40; if [ -d \"$p/.git\" ]; then (cd \"$p\" && echo '[git]' && git remote -v 2>/dev/null | head -n 5 && git status --short 2>/dev/null | head -n 40 && git log -1 --oneline 2>/dev/null); fi; echo '[candidate files]'; find \"$p\" -maxdepth 3 -type f \\( -name '*.py' -o -name '*.js' -o -name '*.ts' -o -name '*.json' -o -name '*.yml' -o -name '*.yaml' -o -name '*.service' -o -name 'Dockerfile' -o -name 'requirements.txt' -o -name 'package.json' \\) -printf '%TY-%Tm-%Td %TH:%TM %p\\n' 2>/dev/null | sort -r | head -n 50; done\n");
+        sb.append("rm -f $TMP_PROJECTS\n");
+        sb.append("echo '==== DOCKER CONTAINER MOUNTS ===='\n");
+        sb.append("for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | head -n 20); do echo \"---- $c ----\"; docker inspect \"$c\" --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' 2>/dev/null; done\n");
+        sb.append("echo '==== SYSTEMD EXECSTART CANDIDATES ===='\n");
+        sb.append("for s in $(systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}' | grep -Ei 'ai|llm|openclaw|hermes|oracle|python|node|uvicorn|fastapi|docker|vllm' | head -n 40); do echo \"---- $s ----\"; systemctl show \"$s\" -p FragmentPath -p ExecStart -p WorkingDirectory -p MainPID --no-pager 2>/dev/null; done\n");
+        if (serverSettings.projectPath != null && serverSettings.projectPath.trim().length() > 0) {
+            sb.append("echo '==== CONFIGURED PROJECT PATH ===='\n");
+            sb.append("cd ").append(DiagnosticCommands.shellQuote(serverSettings.projectPath.trim())).append(" 2>/dev/null && pwd && ls -la && (git status --short 2>/dev/null || true) && (git log -1 --oneline 2>/dev/null || true)\n");
+        } else {
+            sb.append("echo '==== CONFIGURED PROJECT PATH ===='\n");
+            sb.append("echo 'App 尚未設定專案路徑，所以正在自動掃描常見位置。'\n");
+        }
+        sb.append("echo '==== SYSTEMD FAILED ===='\n");
+        sb.append("(systemctl --failed --no-pager || true)\n");
+        sb.append("echo '==== SYSTEMD SERVICES LIKELY RELATED ===='\n");
+        sb.append("(systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -Ei 'ai|llm|openclaw|hermes|oracle|docker|nginx|caddy|python|node|uvicorn|fastapi|ollama|vllm|kaggle' | head -n 120 || true)\n");
+        if (serverSettings.serviceName != null && serverSettings.serviceName.trim().length() > 0) {
+            sb.append("echo '==== CONFIGURED SERVICE STATUS ===='\n");
+            sb.append("(systemctl status ").append(DiagnosticCommands.shellQuote(serverSettings.serviceName.trim())).append(" --no-pager -l || true)\n");
+            sb.append("echo '==== CONFIGURED SERVICE LOG ===='\n");
+            sb.append("(journalctl -u ").append(DiagnosticCommands.shellQuote(serverSettings.serviceName.trim())).append(" -n 160 --no-pager || true)\n");
+        } else {
+            sb.append("echo '==== CONFIGURED SERVICE STATUS ===='\n");
+            sb.append("echo 'App 尚未設定 Service 名稱。'\n");
+        }
+        sb.append("echo '==== DOCKER PS ===='\n");
+        sb.append("(docker ps -a --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}' 2>/dev/null || echo 'docker unavailable or permission denied')\n");
+        sb.append("echo '==== DOCKER COMPOSE PROJECTS ===='\n");
+        sb.append("(docker compose ls 2>/dev/null || true)\n");
+        if (serverSettings.dockerContainer != null && serverSettings.dockerContainer.trim().length() > 0) {
+            sb.append("echo '==== CONFIGURED DOCKER LOG ===='\n");
+            sb.append("(docker logs --tail=180 ").append(DiagnosticCommands.shellQuote(serverSettings.dockerContainer.trim())).append(" 2>&1 || true)\n");
+        } else {
+            sb.append("echo '==== RECENT DOCKER LOGS SAMPLE ===='\n");
+            sb.append("for c in $(docker ps --format '{{.Names}}' 2>/dev/null | head -n 5); do echo \"---- docker logs $c ----\"; docker logs --tail=80 \"$c\" 2>&1; done\n");
+        }
+        sb.append("echo '==== RECENT JOURNAL ERRORS ===='\n");
+        sb.append("(journalctl -p warning -n 120 --no-pager 2>/dev/null || true)\n");
+        sb.append("echo '==== ORACLE_AUTO_CONTEXT_END ===='\n");
+        return sb.toString();
+    }
+
+    private String buildSystemPromptWithOracleContext(String basePrompt, OracleContextPack pack) {
+        String base = basePrompt == null ? "" : basePrompt;
+        if (pack == null || !pack.used) return base;
+        return base + "\n\n"
+            + "重要：這個 App 的主要功能是維護使用者的 Oracle Cloud。"
+            + "當使用者詢問甲骨文、Oracle、主機、服務、Docker、log、專案、故障、部署、維修時，"
+            + "你必須優先使用 App 已透過 SSH 收集的真實主機資料回答。"
+            + "不要只給 OCI Console 的一般教學，不要要求使用者自己查。"
+            + "使用者的雲端專案可能隨時更改，所以不要依賴固定專案路徑；請優先根據 AUTO PROJECT DISCOVERY / LATEST CANDIDATES、Docker mounts、systemd ExecStart 判斷最新專案。"
+            + "若要修改程式，先指出你判斷的目標專案、目標檔案與理由；寫回前必須保留備份與確認。"
+            + "回答時請用繁體中文，直接指出目前主機上看得到的最新專案/服務/容器/錯誤。";
+    }
+
+    private static class OracleContextPack {
+        boolean used = false;
+        String text = "";
     }
 
     private List<ChatMessage> buildContextMessages(String systemPrompt, List<ChatMessage> source, int maxChars) {
@@ -1028,6 +1167,27 @@ public class MainActivity extends Activity {
         return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm 'UTC+8'", java.util.Locale.US).format(cal.getTime());
     }
 
+
+    private String buildOracleProjectDiscoveryCommand() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("set +e\n");
+        sb.append("echo '==== PROJECT_DISCOVERY_START ===='\n");
+        sb.append("echo 'time='$(date '+%F %T %Z')\n");
+        sb.append("echo 'host='$(hostname)' user='$(whoami)\n");
+        sb.append("TMP_PROJECTS=$(mktemp)\n");
+        sb.append("for root in /home/ubuntu /home/opc /opt /srv /var/www; do [ -d \"$root\" ] || continue; find \"$root\" -maxdepth 6 \\( -name .git -o -name docker-compose.yml -o -name compose.yml -o -name package.json -o -name pyproject.toml -o -name requirements.txt -o -name Dockerfile -o -name app.py -o -name main.py \\) -print 2>/dev/null; done | sed -E 's#/(.git|docker-compose.yml|compose.yml|package.json|pyproject.toml|requirements.txt|Dockerfile|app.py|main.py)$##' | sort -u > $TMP_PROJECTS\n");
+        sb.append("echo '==== LATEST PROJECTS SORTED BY MODIFIED TIME ===='\n");
+        sb.append("while read p; do [ -d \"$p\" ] || continue; mt=$(find \"$p\" -maxdepth 4 -type f -printf '%T@\\n' 2>/dev/null | sort -nr | head -n1); [ -z \"$mt\" ] && mt=0; printf '%s\\t%s\\n' \"$mt\" \"$p\"; done < $TMP_PROJECTS | sort -nr | head -n 30 | while IFS=$'\\t' read mt p; do echo \"---- PROJECT: $p ----\"; date -d @${mt%.*} '+last_modified=%F %T' 2>/dev/null || true; echo '[top files]'; find \"$p\" -maxdepth 4 -type f \\( -name '*.py' -o -name '*.js' -o -name '*.ts' -o -name '*.json' -o -name '*.yml' -o -name '*.yaml' -o -name '*.sh' -o -name 'Dockerfile' -o -name 'requirements.txt' -o -name 'package.json' \\) -printf '%TY-%Tm-%Td %TH:%TM %p\\n' 2>/dev/null | sort -r | head -n 80; if [ -d \"$p/.git\" ]; then (cd \"$p\" && echo '[git]' && git remote -v 2>/dev/null | head -n 5 && git status --short 2>/dev/null | head -n 80 && git log -3 --oneline 2>/dev/null); fi; done\n");
+        sb.append("echo '==== DOCKER CONTAINERS AND MOUNTS ===='\n");
+        sb.append("(docker ps -a --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}' 2>/dev/null || true)\n");
+        sb.append("for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | head -n 30); do echo \"---- $c mounts ----\"; docker inspect \"$c\" --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' 2>/dev/null; done\n");
+        sb.append("echo '==== SYSTEMD EXECSTART ===='\n");
+        sb.append("for s in $(systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}' | grep -Ei 'ai|llm|openclaw|hermes|oracle|python|node|uvicorn|fastapi|docker|vllm|nginx|caddy' | head -n 60); do echo \"---- $s ----\"; systemctl show \"$s\" -p FragmentPath -p ExecStart -p WorkingDirectory -p MainPID --no-pager 2>/dev/null; done\n");
+        sb.append("rm -f $TMP_PROJECTS\n");
+        sb.append("echo '==== PROJECT_DISCOVERY_END ===='\n");
+        return sb.toString();
+    }
+
     private void showRepairPage() {
         LinearLayout box = page("維修");
         addSection(box, "一鍵診斷");
@@ -1053,9 +1213,19 @@ public class MainActivity extends Activity {
         box.addView(run);
 
         addSection(box, "AI 修正遠端檔案");
-        EditText path = edit("遠端檔案路徑，例如 /home/ubuntu/my-ai/main.py", false);
+        box.addView(label("不必固定專案路徑。可先按「自動掃描最新專案」，App 會根據目前主機上的 Git / Docker / systemd / 最近修改時間找最新候選。", 14, false));
+        EditText path = edit("遠端檔案路徑，例如 /home/ubuntu/my-ai/main.py；可由掃描結果決定", false);
         box.addView(path);
-        EditText instruction = edit("你要 AI 怎麼修，例如：修正啟動失敗錯誤，保留原功能", true);
+        final String[] latestProjectScan = new String[] {""};
+        Button scanProjects = button("自動掃描最新專案 / 服務 / 容器");
+        scanProjects.setOnClickListener(v -> runTask("正在自動掃描最新專案…", () -> {
+            CommandResult r = new SshClient(serverSettings).runCommand(buildOracleProjectDiscoveryCommand(), 240000);
+            latestProjectScan[0] = maskSensitive(limit(r.asText(), 70000));
+            store.appendHistory(new RepairHistory(now(), "自動掃描最新專案", latestProjectScan[0]));
+            ui.post(() -> showTextDialog("最新專案掃描結果", latestProjectScan[0] + "\n\n請把你要修的檔案路徑填入「遠端檔案路徑」。若你不確定，可在聊天頁問：根據剛剛掃描結果，應該修哪個檔案？"));
+        }));
+        box.addView(scanProjects);
+        EditText instruction = edit("你要 AI 怎麼修，例如：修正啟動失敗錯誤，保留原功能；AI 會參考最新掃描結果", true);
         instruction.setMinLines(3); box.addView(instruction);
         TextView fileBox = label("尚未讀取檔案", 13, false);
         fileBox.setTextIsSelectable(true); fileBox.setBackgroundColor(0xffffffff); fileBox.setPadding(dp(8), dp(8), dp(8), dp(8));
@@ -1073,8 +1243,11 @@ public class MainActivity extends Activity {
         fix.setOnClickListener(v -> {
             if (original[0].isEmpty()) { toast("請先讀取檔案"); return; }
             List<ChatMessage> msgs = new ArrayList<>();
-            msgs.add(new ChatMessage("system", "你是程式修復助手。請只輸出修正後完整檔案內容，不要 Markdown，不要解釋。"));
-            msgs.add(new ChatMessage("user", "檔案路徑：" + path.getText().toString().trim() + "\n修正要求：" + instruction.getText().toString().trim() + "\n\n原始檔案：\n" + original[0]));
+            msgs.add(new ChatMessage("system", "你是程式修復助手。使用者的 Oracle 專案可能隨時更改，所以請參考最新掃描資料，但只修正目前指定檔案。請只輸出修正後完整檔案內容，不要 Markdown，不要解釋。"));
+            String scanContext = latestProjectScan[0] == null || latestProjectScan[0].trim().isEmpty()
+                ? "尚未執行最新專案掃描。請只根據指定檔案修正。"
+                : latestProjectScan[0];
+            msgs.add(new ChatMessage("user", "【最新 Oracle 專案掃描資料】\n" + scanContext + "\n\n檔案路徑：" + path.getText().toString().trim() + "\n修正要求：" + instruction.getText().toString().trim() + "\n\n原始檔案：\n" + original[0]));
             runTask("正在讓 AI 修正檔案…", () -> {
                 String content = llm.sendChat(modelSettings.copy(), msgs);
                 proposed[0] = stripCodeFence(content);
@@ -1110,6 +1283,8 @@ public class MainActivity extends Activity {
             List<CommandResult> results = new SshClient(serverSettings).runCommands(commands, 90000);
             StringBuilder raw = new StringBuilder();
             for (CommandResult r : results) raw.append(r.asText()).append("\n");
+            CommandResult discovery = new SshClient(serverSettings).runCommand(buildOracleProjectDiscoveryCommand(), 240000);
+            raw.append("\n\n【自動最新專案掃描】\n").append(discovery.asText()).append("\n");
             List<ChatMessage> msgs = new ArrayList<>();
             msgs.add(new ChatMessage("system", runtimeConfig.systemPrompt));
             msgs.add(new ChatMessage("user", "請根據以下 Oracle Cloud 診斷輸出，判斷故障原因、風險、建議修復步驟。不要要求我重新提供上一輪已存在的資訊。\n\n" + raw));
@@ -1332,7 +1507,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v1.5.5\n");
+        sb.append("- App 版本：v1.5.7\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");

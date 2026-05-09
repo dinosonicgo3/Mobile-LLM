@@ -1,5 +1,5 @@
 {
-  "version": "v1.5.5-log-save-to-downloads",
+  "version": "v1.5.7-dynamic-oracle-project-discovery",
   "systemPrompt": "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。你可以進行一般聊天、程式修正、LLM API 設定、Kaggle/NVIDIA NIM/Google API 診斷，以及 Oracle Cloud 維修。你必須保持上下文，不得只根據最後一句話回答。",
   "extraDiagnosticCommands": [
     "date",
@@ -34,7 +34,7 @@
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "LOG 回報新增儲存到手機 Downloads/OracleCloudAI；分享改為備用，避免分享開成新話題。",
+    "fix": "Oracle 維修改為動態掃描最新專案；診斷和聊天上下文會列出最近修改的 Git/Docker/systemd 候選。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {
@@ -58,5 +58,10 @@
       }
     ],
     "note": "本機模型使用 LiteRT-LM；E2B/E4B 手機本地運行，不走 Google/NVIDIA/Oracle。"
+  },
+  "oracleAutoContext": {
+    "enabled": true,
+    "dynamicProjectDiscovery": true,
+    "description": "不依賴固定專案路徑，根據最新 SSH 掃描、修改時間、Docker mounts、systemd ExecStart 判斷目標專案。"
   }
 }

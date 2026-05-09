@@ -434,3 +434,48 @@ Download/OracleCloudAI/
   1. App → 齒輪 → LOG 回報 → 儲存 Markdown 到下載資料夾
   2. 回到原本 ChatGPT 對話
   3. 用附件上傳該 `.md` 或 `.txt` 檔案
+
+
+## v1.5.6 Oracle 自動上下文
+
+修正核心問題：聊天頁原本只是把「檢查甲骨文雲端」直接送給模型，沒有先 SSH 到 Oracle 主機，因此模型會給一般 OCI 教學。
+
+此版新增：
+
+- 偵測聊天內容是否包含：
+  - 甲骨文 / Oracle / OCI
+  - 主機 / 服務 / 專案 / Docker / Container
+  - log / 日誌 / 維修 / 故障 / 部署 / 更新 / 重啟 / 檢查 / 狀態
+- 若命中，App 會先透過 SSH 自動收集：
+  - OS / hostname / whoami
+  - CPU / 記憶體 / 磁碟
+  - 常見專案目錄
+  - systemd failed services
+  - 疑似 AI / LLM / Docker / Python / Node 服務
+  - Docker containers
+  - Docker logs sample
+  - journal warning/error sample
+- 再把真實主機資料塞入 LLM 上下文。
+- AI 會根據真實 SSH 結果回答，不再只給一般教學。
+
+
+## v1.5.7 動態 Oracle 專案搜尋
+
+修正方向：
+
+- 不再假設 Oracle 上只有固定專案路徑。
+- 使用者的雲端專案可能隨時更改，因此每次診斷/維修都應先掃描最新狀態。
+
+新增：
+
+- 聊天 Oracle 自動上下文加入：
+  - 最近修改的專案候選
+  - Git remote / git status / 最近 commit
+  - Docker container mounts
+  - systemd ExecStart / WorkingDirectory
+  - 常見程式檔案候選
+- 維修頁新增：
+  - `自動掃描最新專案 / 服務 / 容器`
+- 一鍵診斷會同時跑最新專案掃描。
+- AI 修正遠端檔案時會帶入最新掃描資料，但仍只會在使用者指定檔案後產生修正版。
+- 寫回檔案仍需使用者確認，並會備份原檔。
