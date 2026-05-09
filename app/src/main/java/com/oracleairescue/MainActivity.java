@@ -83,7 +83,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v1.5.2｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v1.5.3｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.5.2");
+        title.setText("甲骨文雲端AI  v1.5.3");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -752,6 +752,36 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
+
+    private static String cleanModelThoughts(String text) {
+        if (text == null) return "";
+        String x = text;
+
+        // 移除常見顯式思考區塊。這是顯示層清理，不會改變模型本身能力。
+        x = x.replaceAll("(?is)<think>.*?</think>", "");
+        x = x.replaceAll("(?is)<thinking>.*?</thinking>", "");
+        x = x.replaceAll("(?is)<thought>.*?</thought>", "");
+        x = x.replaceAll("(?is)<reasoning>.*?</reasoning>", "");
+
+        // 移除 Markdown code fence 形式的 thinking/reasoning。
+        x = x.replaceAll("(?is)```\\s*(thinking|think|thought|reasoning)\\s*\\n.*?```", "");
+
+        // 移除常見標題段落：思考、推理、Reasoning、Chain of thought。
+        x = x.replaceAll("(?is)(^|\\n)\\s*(思考過程|推理過程|內部思考|Reasoning|Thought process|Chain of thought)\\s*[:：]\\s*.*?(?=\\n\\s*(最終答案|答案|Final answer|回覆)\\s*[:：]|\\z)", "\n");
+
+        // 若模型輸出「最終答案：」，只保留後面比較乾淨。
+        String[] markers = new String[] {"最終答案：", "最終答案:", "Final answer:", "Final Answer:"};
+        for (String m : markers) {
+            int idx = x.indexOf(m);
+            if (idx >= 0 && idx + m.length() < x.length()) {
+                x = x.substring(idx + m.length()).trim();
+                break;
+            }
+        }
+
+        return x.trim();
+    }
+
     private static String formatBytes(long bytes) {
         double v = bytes;
         String[] units = {"B", "KB", "MB", "GB"};
@@ -1209,7 +1239,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v1.5.2\n");
+        sb.append("- App 版本：v1.5.3\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");

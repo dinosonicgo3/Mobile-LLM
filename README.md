@@ -391,3 +391,20 @@ android.enableJetifier=true
 - 啟用 LiteRT-LM speculative decoding / MTP。
 
 注意：E2B 約 2.6GB，E4B 約 3.7GB；手機需要足夠儲存空間與 RAM。第一次本機推論會花時間載入模型。
+
+
+## v1.5.3 本機 Gemma 編譯修正
+
+修正 v1.5.2 打包失敗：
+
+```text
+cannot find symbol
+method cleanModelThoughts(String)
+```
+
+原因是本機 Gemma 回覆分支需要清理 `<think>...</think>` / thinking code block 等思考輸出，但 `MainActivity` 尚未補上該方法。
+
+此版已補上 `cleanModelThoughts`，並保留：
+- 本機 Gemma 4 E2B / E4B LiteRT-LM
+- Markdown 顯示
+- Google API / NVIDIA NIM / Kaggle / Oracle SSH 維修
