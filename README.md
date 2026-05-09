@@ -4,7 +4,7 @@
 
 ## 版本
 
-v1.3.2 Java 原生版。此版將 App 顯示名稱改為「甲骨文雲端AI」，並加入自訂啟動圖示。
+v1.3.3 Java 原生版。此版將 App 顯示名稱改為「甲骨文雲端AI」，並加入自訂啟動圖示。
 
 此版改成 Java + 原生 Android UI，移除 Kotlin/Compose，目標是降低 GitHub Actions 編譯失敗機率。
 
@@ -113,7 +113,7 @@ Actions → Build Release APK → Run workflow
 填 tag，例如：
 
 ```text
-v1.3.2
+v1.3.3
 ```
 
 它會建立 GitHub Release 並附上 APK。之後 App 的「更新」頁可以列出 Releases。
@@ -149,3 +149,9 @@ oracle-ai-rescue-config.json
 - App 會在手機端保存金鑰，不會要求你寫死到原始碼。
 - AI 產生的指令不會自動執行，必須你手動確認。
 - 修改檔案前會建立備份。
+
+
+## v1.3.3
+
+- Oracle SSH 設定頁新增「從檔案匯入 SSH 私鑰」，可直接選擇 `ssh-key-2026-02-26.key`。
+- 新增私鑰格式檢查，會顯示 RSA / OpenSSH / 公鑰誤用等狀態。

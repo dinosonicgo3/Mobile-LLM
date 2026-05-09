@@ -4,6 +4,9 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Typeface;
 import android.net.Uri;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -54,6 +57,9 @@ public class MainActivity extends Activity {
     private Spinner chatModelSpinner;
     private TextView chatLogView;
     private EditText chatInput;
+    private static final int REQUEST_IMPORT_SSH_KEY = 8801;
+    private EditText sshPrivateKeyEditor;
+    private TextView sshKeyStatusLabel;
 
     private final String[] providerLabels = new String[] {"Google Gemini", "NVIDIA NIM", "Kaggle Qwen / OpenAI 相容", "自訂 OpenAI 相容"};
     private final String[] providerCodes = new String[] {"gemini", "nim", "kaggle", "custom"};
@@ -71,6 +77,38 @@ public class MainActivity extends Activity {
         showChatPage();
     }
 
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_IMPORT_SSH_KEY) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            toast("已取消匯入私鑰");
+            return;
+        }
+        Uri uri = data.getData();
+        try {
+            try {
+                final int flags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
+                if (flags != 0) getContentResolver().takePersistableUriPermission(uri, flags);
+            } catch (Exception ignored) {}
+            String keyText = normalizeImportedPrivateKey(readTextFromUri(uri));
+            if (keyText.trim().isEmpty()) {
+                showTextDialog("匯入失敗", "檔案內容是空的。請確認選的是 ssh-key-2026-02-26.key 這類 SSH 私鑰檔。");
+                return;
+            }
+            if (!keyText.contains("-----BEGIN ") || !keyText.contains("-----END ")) {
+                showTextDialog("匯入提醒", "這個檔案未偵測到 BEGIN/END 私鑰標記。\n\n請確認你選的是 SSH 私鑰，不是 .pub 公鑰或其他文字檔。\n\nApp 仍會先放入欄位，請按『檢查私鑰格式』確認。");
+            }
+            serverSettings.privateKey = keyText;
+            store.saveServer(serverSettings);
+            if (sshPrivateKeyEditor != null) sshPrivateKeyEditor.setText(keyText);
+            updateSshKeyStatus(keyText);
+            toast("已匯入並加密保存 SSH 私鑰");
+        } catch (Exception e) {
+            showTextDialog("匯入 SSH 私鑰失敗", e.getClass().getSimpleName() + "：" + e.getMessage() + "\n\n請確認檔案可讀，並選擇 ssh-key-2026-02-26.key 這類純文字私鑰檔。");
+        }
+    }
+
     private void showShell(String selected) {
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -78,7 +116,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.3.2");
+        title.setText("甲骨文雲端AI  v1.3.3");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -389,6 +427,21 @@ public class MainActivity extends Activity {
         EditText username = edit("使用者，例如 ubuntu/opc", false); username.setText(serverSettings.username); box.addView(username);
         EditText password = edit("密碼，可留空，建議用私鑰", false); password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD); password.setText(serverSettings.password); box.addView(password);
         EditText privateKey = edit("SSH 私鑰內容，包含 BEGIN RSA PRIVATE KEY 或 BEGIN OPENSSH PRIVATE KEY", true); privateKey.setMinLines(5); privateKey.setText(serverSettings.privateKey); box.addView(privateKey);
+        sshPrivateKeyEditor = privateKey;
+        sshKeyStatusLabel = label(describePrivateKeyForUi(serverSettings.privateKey), 13, false);
+        sshKeyStatusLabel.setTextIsSelectable(true);
+        box.addView(sshKeyStatusLabel);
+        LinearLayout keyRow = row();
+        Button importKey = button("從檔案匯入 SSH 私鑰");
+        importKey.setOnClickListener(v -> importSshPrivateKeyFile());
+        Button checkKey = button("檢查私鑰格式");
+        checkKey.setOnClickListener(v -> {
+            String keyText = privateKey.getText().toString();
+            updateSshKeyStatus(keyText);
+            showTextDialog("私鑰格式檢查", describePrivateKeyForUi(keyText));
+        });
+        keyRow.addView(importKey, weight()); keyRow.addView(checkKey, weight()); box.addView(keyRow);
+        box.addView(label("建議使用『從檔案匯入 SSH 私鑰』選擇 ssh-key-2026-02-26.key，避免手動貼上時漏掉換行或貼到錯欄位。", 13, false));
         EditText passphrase = edit("私鑰密碼，可留空", false); passphrase.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD); passphrase.setText(serverSettings.privateKeyPassphrase); box.addView(passphrase);
         EditText projectPath = edit("專案路徑，例如 /home/ubuntu/my-ai", false); projectPath.setText(serverSettings.projectPath); box.addView(projectPath);
         EditText serviceName = edit("systemd 服務名，例如 my-ai.service", false); serviceName.setText(serverSettings.serviceName); box.addView(serviceName);
@@ -410,6 +463,7 @@ public class MainActivity extends Activity {
             serverSettings.dockerContainer = docker.getText().toString().trim();
             serverSettings.allowSudoCommands = allowSudo.isChecked();
             store.saveServer(serverSettings);
+            updateSshKeyStatus(serverSettings.privateKey);
             toast("已加密儲存在手機本機");
         });
         Button test = button("測試 SSH");
@@ -596,6 +650,82 @@ public class MainActivity extends Activity {
 
     private void confirm(String msg, Confirmed yes) {
         new AlertDialog.Builder(this).setTitle("請確認").setMessage(msg).setPositiveButton("確定", (d, w) -> yes.run()).setNegativeButton("取消", null).show();
+    }
+
+    private void importSshPrivateKeyFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            startActivityForResult(Intent.createChooser(intent, "選擇 ssh-key-2026-02-26.key"), REQUEST_IMPORT_SSH_KEY);
+        } catch (Exception e) {
+            Intent fallback = new Intent(Intent.ACTION_GET_CONTENT);
+            fallback.addCategory(Intent.CATEGORY_OPENABLE);
+            fallback.setType("*/*");
+            fallback.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivityForResult(Intent.createChooser(fallback, "選擇 SSH 私鑰檔"), REQUEST_IMPORT_SSH_KEY);
+        }
+    }
+
+    private String readTextFromUri(Uri uri) throws Exception {
+        InputStream in = getContentResolver().openInputStream(uri);
+        if (in == null) throw new IllegalArgumentException("無法開啟檔案");
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            int total = 0;
+            while ((n = in.read(buf)) >= 0) {
+                total += n;
+                if (total > 512 * 1024) throw new IllegalArgumentException("檔案太大，不像 SSH 私鑰檔");
+                out.write(buf, 0, n);
+            }
+            return new String(out.toByteArray(), StandardCharsets.UTF_8);
+        } finally {
+            try { in.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private static String normalizeImportedPrivateKey(String raw) {
+        if (raw == null) return "";
+        String s = raw.replace("\uFEFF", "");
+        s = s.replace("\r\n", "\n").replace('\r', '\n').trim();
+        if (s.contains("\\n") && !s.contains("\n-----END")) s = s.replace("\\n", "\n");
+        if (!s.endsWith("\n")) s += "\n";
+        return s;
+    }
+
+    private void updateSshKeyStatus(String keyText) {
+        if (sshKeyStatusLabel != null) sshKeyStatusLabel.setText(describePrivateKeyForUi(keyText));
+    }
+
+    private String describePrivateKeyForUi(String raw) {
+        String k = normalizeImportedPrivateKey(raw);
+        if (k.trim().isEmpty()) return "私鑰狀態：未填入。請貼上完整私鑰，或按『從檔案匯入 SSH 私鑰』選擇 ssh-key-2026-02-26.key。";
+        String[] lines = k.split("\n");
+        String first = "";
+        String last = "";
+        for (String line : lines) if (!line.trim().isEmpty()) { first = line.trim(); break; }
+        for (int i = lines.length - 1; i >= 0; i--) if (!lines[i].trim().isEmpty()) { last = lines[i].trim(); break; }
+        String type;
+        if (first.contains("RSA PRIVATE KEY")) type = "RSA SSH 私鑰，可用於 Oracle Compute SSH";
+        else if (first.contains("OPENSSH PRIVATE KEY")) type = "OpenSSH 私鑰，可用於 Oracle Compute SSH";
+        else if (first.contains("PRIVATE KEY")) type = "私鑰格式，但不確定是否為 SSH 私鑰";
+        else if (first.startsWith("ssh-rsa") || first.startsWith("ssh-ed25519")) type = "這是公鑰 .pub，不是私鑰，不能登入";
+        else type = "未辨識格式，可能不是 SSH 私鑰";
+        return "私鑰狀態：已填入\n" +
+               "偵測格式：" + type + "\n" +
+               "第一行：" + maskForUi(first) + "\n" +
+               "最後一行：" + maskForUi(last) + "\n" +
+               "行數：約 " + lines.length + " 行｜長度：約 " + k.length() + " 字元\n" +
+               "BEGIN：" + (k.contains("-----BEGIN ") ? "有" : "沒有") + "｜END：" + (k.contains("-----END ") ? "有" : "沒有");
+    }
+
+    private static String maskForUi(String line) {
+        if (line == null || line.length() == 0) return "空";
+        if (line.length() <= 24) return line;
+        return line.substring(0, 16) + "..." + line.substring(line.length() - 10);
     }
 
     private void showTextDialog(String title, String text) {

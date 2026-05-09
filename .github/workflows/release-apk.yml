@@ -6,7 +6,7 @@ on:
       tag:
         description: 'Release tag，例如 v1.3.0'
         required: true
-        default: 'v1.3.2'
+        default: 'v1.3.3'
 
 permissions:
   contents: write
