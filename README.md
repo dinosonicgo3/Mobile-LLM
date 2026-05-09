@@ -694,3 +694,44 @@ MainActivity.java 裡 buildOracleDiagnosticPacketCommand 定義數量 = 1
 ```
 
 如果 GitHub Actions 仍出現同一組錯誤，代表 GitHub 上跑的不是這份 v1.6.8 檔案，而是舊 commit / 舊 zip 沒有被覆蓋。
+
+
+## v1.7.0 LLM 驅動的 Oracle 工具維修核心
+
+本版修正 v1.6.8 的核心架構問題：工具啟動不再依賴 LLM 先成功選工具。
+
+新流程：
+
+```text
+使用者提出 Oracle 問題
+↓
+App 先執行 bootstrap_scan（SSH / 專案候選 / Docker / systemd 摘要）
+↓
+LLM 根據 bootstrap_scan 判斷下一個工具
+↓
+App 執行安全白名單工具
+↓
+LLM 繼續判斷、解析、決定下一步
+↓
+需要修程式時，LLM 產生修正；App 負責備份、測試、回滾；31B 負責後段驗證
+```
+
+改善：
+
+- LLM timeout 時，App 仍會顯示已取得的工具結果。
+- 工具結果會記錄工具名稱、exitCode、耗時、輸出摘要。
+- 支援 JSON 工具呼叫與原本 TOOL/ARGS 格式。
+- 維修頁新增「Oracle 工具自測」。
+
+分工：
+
+- LLM：判斷、解析、決定查什麼、提出修正。
+- App：安全執行工具、備份、寫回、測試、回滾。
+- Gemma 4 31B：後段驗證修復是否真的通過測試、是否可能造成新錯誤。
+
+
+## v1.7.1 LLM 直連 SSH 工具橋接模式
+
+App 不再代為 bootstrap 掃描 Oracle。LLM 自己決定第一個 SSH 工具，App 只作橋接、安全檢查、備份、測試與回滾。
+
+新增：`ssh_exec` 只讀 SSH 工具、`repair_file` 安全修復工具。

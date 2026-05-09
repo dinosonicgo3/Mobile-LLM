@@ -96,7 +96,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v1.6.8｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v1.7.1｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -139,7 +139,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.6.8");
+        title.setText("甲骨文雲端AI  v1.7.1");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -388,83 +388,98 @@ public class MainActivity extends Activity {
         List<ChatMessage> msgs = new ArrayList<>();
         msgs.add(new ChatMessage("system",
             runtimeConfig.systemPrompt + "\n\n"
-            + "你是 Oracle Cloud 工具式維修 Agent。你不能假裝已經查看主機。"
-            + "你必須自己決定是否需要使用工具。"
-            + "如果使用者問甲骨文有哪些專案、服務、Docker、狀態，第一步通常要使用 list_projects 或 list_docker/list_services。"
-            + "每次只呼叫一個工具，不要一次要求大量 logs。"
-            + "App 只允許安全白名單工具；寫檔、刪除、重啟、安裝不在此工具迴圈內，必須由使用者在維修頁確認。"
-            + "\n\n可用工具：\n"
-            + "TOOL: list_projects\n"
-            + "用途：列最近專案候選、Docker/systemd/ports 摘要。\n\n"
-            + "TOOL: list_docker\n"
-            + "用途：列 Docker 容器與 compose 摘要。\n\n"
-            + "TOOL: list_services\n"
-            + "用途：列疑似 AI/LLM/Python/Node/Docker systemd services 與 failed services。\n\n"
-            + "TOOL: service_status\nARGS: name=<service 名稱>\n"
-            + "用途：查單一 service 狀態與少量 journal。\n\n"
-            + "TOOL: container_logs\nARGS: name=<container 名稱> lines=<最多120>\n"
-            + "用途：查單一 Docker 容器最近 log。\n\n"
-            + "TOOL: list_dir\nARGS: path=<目錄>\n"
-            + "用途：列單一目錄與淺層檔案。\n\n"
-            + "TOOL: read_file\nARGS: path=<檔案路徑>\n"
-            + "用途：讀取單一檔案前 20000 字元。\n\n"
-            + "TOOL: run_safe\nARGS: command=<只讀安全指令>\n"
-            + "用途：執行只讀指令。禁止 sudo、rm、mv、cp、chmod、chown、kill、restart、start、stop、install、write、tee、curl|sh 等。\n\n"
-            + "TOOL: final\nANSWER: <最終回答>\n\n"
-            + "回覆格式必須只用上述格式，不要 Markdown code fence。工具結果不足時再選下一個工具；足夠時用 final。"));
-        msgs.add(new ChatMessage("user",
-            "使用者問題：" + userText + "\n\n"
-            + "請你決定下一個最小工具。若你還沒查看主機，不要直接回答有哪些專案。"));
+            + "你是 Oracle Cloud 維修大腦。App 只是 SSH 工具橋接器，不會替你主動搜尋或判斷。"
+            + "你必須自己決定第一個要執行的 SSH 工具。還沒有使用工具前，不要聲稱已查看主機。"
+            + "每次只呼叫一個最小工具；工具結果回來後再判斷下一步。"
+            + "如果要修程式，先用工具定位專案、讀取檔案，再用 repair_file 工具啟動安全修復流水線。"
+            + "repair_file 會由 App 自動備份、寫回、測試、Gemma 4 31B 驗證；驗證失敗會回滾。"
+            + "禁止要求整包 logs；只查單一 service/container/file。"
+            + "\n\n工具呼叫請優先輸出 JSON，且不要包在 Markdown code fence：\n"
+            + "{\"tool\":\"ssh_exec\",\"args\":{\"command\":\"pwd && ls -la /home/ubuntu\"}}\n"
+            + "{\"tool\":\"read_file\",\"args\":{\"path\":\"/home/ubuntu/project/main.py\"}}\n"
+            + "{\"tool\":\"repair_file\",\"args\":{\"path\":\"/home/ubuntu/project/main.py\",\"instruction\":\"根據錯誤 log 修正啟動失敗\"}}\n"
+            + "{\"tool\":\"final\",\"answer\":\"你的最終回答\"}\n\n"
+            + "也支援舊格式：\nTOOL: ssh_exec\nARGS: command=...\n\n"
+            + "可用工具：\n"
+            + "ssh_exec：執行只讀安全 SSH 指令。禁止 sudo、rm、mv、cp、chmod、chown、kill、restart、start、stop、install、tee、重導向寫入等。\n"
+            + "list_projects：快速列專案候選摘要。\n"
+            + "list_docker：列 Docker 容器與 compose 摘要。\n"
+            + "list_services：列 systemd 服務與 failed services 摘要。\n"
+            + "service_status：查單一 service 狀態，args: name。\n"
+            + "container_logs：查單一 container 最近 log，args: name, lines。\n"
+            + "list_dir：列單一目錄，args: path。\n"
+            + "read_file：讀取單一檔案前 20000 字元，args: path。\n"
+            + "repair_file：安全修復單一檔案，args: path, instruction。\n"
+            + "final：最終回答。\n"
+            + "重要：App 不會先幫你掃描；第一步工具必須由你決定。"));
+        msgs.add(new ChatMessage("user", "使用者問題：" + userText + "\n\n請你決定第一個最小 SSH 工具。還沒有查主機前，不要直接回答。"));
 
         String lastModelText = "";
-        for (int step = 1; step <= 5; step++) {
+        for (int step = 1; step <= 8; step++) {
             String modelText;
             try {
+                ui.post(() -> setStatus("Oracle SSH 橋接：LLM 正在決定工具…"));
                 modelText = llm.sendChat(modelSettings.copy(), msgs);
                 modelText = cleanModelThoughts(modelText);
             } catch (Exception e) {
+                appLog("ORACLE BRIDGE｜model failed｜" + e.getClass().getSimpleName() + "：" + e.getMessage());
                 if (observations.length() > 0) {
-                    return "模型在 Oracle 工具迴圈中失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage()
-                        + "\n\n以下是目前已取得的工具結果摘要：\n\n```text\n" + compactForModel(observations.toString(), 12000) + "\n```";
+                    return "模型在決定下一步工具時失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage()
+                        + "\n\nApp 已完成的 SSH 工具結果如下：\n\n```text\n"
+                        + compactForModel(observations.toString(), 16000) + "\n```";
                 }
-                return "模型在選擇 Oracle 工具時失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage();
+                return "模型在決定第一個 SSH 工具時失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage()
+                    + "\n\n因為你要求 App 只作橋接、不代為搜尋，所以 App 沒有自行掃描。請換用較穩定模型或稍後重試。";
             }
+
             lastModelText = modelText == null ? "" : modelText.trim();
             OracleToolCall call = parseOracleToolCall(lastModelText);
 
             if (call == null) {
-                if (observations.length() > 0) {
-                    msgs.add(new ChatMessage("assistant", lastModelText));
-                    msgs.add(new ChatMessage("user", "你剛才沒有使用指定工具格式。請根據目前工具結果，用 TOOL: final 與 ANSWER: 給最終答案。\n\n目前工具結果：\n" + compactForModel(observations.toString(), 12000)));
-                    continue;
+                msgs.add(new ChatMessage("assistant", lastModelText));
+                msgs.add(new ChatMessage("user", "你剛才沒有輸出可解析工具格式。請只輸出 JSON 工具呼叫，例如 {\"tool\":\"ssh_exec\",\"args\":{\"command\":\"pwd && ls -la /home/ubuntu\"}}。若資料足夠，請輸出 {\"tool\":\"final\",\"answer\":\"...\"}。"));
+                if (step >= 2) {
+                    return "模型沒有輸出可解析工具格式。\n\n模型最後輸出：\n" + lastModelText
+                        + "\n\n目前已取得工具結果：\n```text\n" + compactForModel(observations.toString(), 16000) + "\n```";
                 }
-                return lastModelText.isEmpty() ? "模型沒有選擇工具，也沒有產生回答。" : lastModelText;
+                continue;
             }
 
             if ("final".equals(call.tool)) {
                 String ans = call.arg("answer");
                 if (ans.isEmpty()) ans = stripToolHeader(lastModelText);
-                return ans.trim().isEmpty() ? "Oracle Agent 完成，但 final 內容是空白。" : ans.trim();
+                return ans.trim().isEmpty() ? "Oracle SSH 橋接完成，但 final 內容是空白。" : ans.trim();
             }
 
+            ui.post(() -> setStatus("Oracle SSH 橋接：正在執行工具 " + call.tool));
             String observation = executeOracleTool(call);
-            observation = compactForModel(observation, 7000);
+            observation = compactForModel(observation, 8000);
             observations.append("\n\n===== STEP ").append(step).append(" TOOL ").append(call.tool).append(" =====\n").append(observation);
-            appLog("ORACLE TOOL｜step=" + step + "｜tool=" + call.tool + "｜obsLength=" + observation.length());
+            appLog("ORACLE BRIDGE TOOL｜step=" + step + "｜tool=" + call.tool + "｜obsLength=" + observation.length());
 
             msgs.add(new ChatMessage("assistant", lastModelText));
             msgs.add(new ChatMessage("user",
-                "工具 `" + call.tool + "` 執行結果如下。請判斷是否還需要下一個最小工具；若足夠，請用 TOOL: final。不要要求整包 logs。\n\n"
+                "工具 `" + call.tool + "` 執行結果如下。請你判斷下一個最小工具，或輸出 final。不要要求整包 logs。\n\n"
                 + observation));
         }
 
-        return "Oracle Agent 已達 5 步工具上限。以下是已取得的工具結果，請根據這些結果判斷下一步：\n\n```text\n"
-            + compactForModel(observations.toString(), 16000) + "\n```\n\n最後一次模型輸出：\n" + lastModelText;
+        return "Oracle SSH 橋接已達 8 步工具上限。以下是已取得的工具結果：\n\n```text\n"
+            + compactForModel(observations.toString(), 18000) + "\n```\n\n最後一次模型輸出：\n" + lastModelText;
     }
 
     private OracleToolCall parseOracleToolCall(String text) {
         if (text == null) return null;
         String x = text.trim();
+
+        // Prefer JSON tool calls when possible: {"tool":"list_docker","args":{...}}
+        Matcher jsonTool = Pattern.compile("(?is)\\{.*?\\\"tool\\\"\\s*:\\s*\\\"([a-zA-Z0-9_\\-]+)\\\".*?\\}").matcher(x);
+        if (jsonTool.find()) {
+            OracleToolCall call = new OracleToolCall();
+            call.tool = jsonTool.group(1).trim().toLowerCase(Locale.ROOT);
+            call.raw = jsonTool.group(0);
+            return call;
+        }
+
         Matcher m = Pattern.compile("(?im)^\\s*TOOL\\s*:\\s*([a-zA-Z0-9_\\-]+)\\s*$").matcher(x);
         if (!m.find()) return null;
         OracleToolCall call = new OracleToolCall();
@@ -486,11 +501,58 @@ public class MainActivity extends Activity {
             .trim();
     }
 
+    private String runBridgeRepairFile(String filePath, String instruction) {
+        try {
+            SshClient ssh = new SshClient(serverSettings);
+            String original = ssh.readFile(filePath);
+            List<ChatMessage> repairMsgs = new ArrayList<>();
+            repairMsgs.add(new ChatMessage("system", "你是程式修復助手。請只輸出修正後完整檔案內容，不要 Markdown，不要解釋。"));
+            repairMsgs.add(new ChatMessage("user", "檔案路徑：" + filePath + "\n修正要求：" + instruction + "\n\n原始檔案：\n" + original));
+            String proposed = stripCodeFence(llm.sendChat(modelSettings.copy(), repairMsgs));
+            String diff = DiffUtil.unifiedDiff(original, proposed);
+            if (proposed.trim().isEmpty() || proposed.equals(original)) return "repair_file 失敗：主模型沒有產生有效修改，或修正版與原檔相同。";
+            String pre = verifyPatchWith31B("BRIDGE_PRE_WRITE_REVIEW", filePath, instruction, "LLM 直連 SSH 橋接模式：由 LLM 指定 repair_file。", original, proposed, diff, "尚未寫回，因此尚無實際測試結果。請判斷是否可進入寫回後測試。");
+            if (!verifierPassed(pre)) return "repair_file 已被 31B 寫回前預審阻擋，不會寫回。\n\n【Diff】\n" + limit(diff, 12000) + "\n\n【31B 預審】\n" + pre;
+            String backup = "";
+            try {
+                backup = ssh.writeFileWithBackup(filePath, proposed);
+                CommandResult validation = ssh.runCommand(buildValidationCommand(filePath), 180000);
+                String validationText = validation.asText();
+                String finalReport = verifyPatchWith31B("BRIDGE_FINAL_AFTER_TESTS", filePath, instruction, "LLM 直連 SSH 橋接模式：寫回後測試。", original, proposed, diff, "【App 自動測試輸出】\n" + validationText);
+                boolean ok = validation.exitCode == 0 && verifierPassed(finalReport);
+                if (!ok) {
+                    CommandResult rb = ssh.runCommand("cat -- " + DiagnosticCommands.shellQuote(backup) + " > " + DiagnosticCommands.shellQuote(filePath), 60000);
+                    return "repair_file 寫回後驗證失敗，已自動回滾。\n\n備份：" + backup + "\n\n【回滾結果】\n" + rb.asText() + "\n\n【測試輸出】\n" + validationText + "\n\n【31B 最終驗證】\n" + finalReport;
+                }
+                return "repair_file 安全修復完成。\n\n檔案：" + filePath + "\n備份：" + backup + "\n自動測試：通過\n31B 後段驗證：通過\n\n【Diff】\n" + limit(diff, 12000) + "\n\n【測試輸出】\n" + validationText + "\n\n【31B 最終驗證】\n" + finalReport;
+            } catch (Exception e) {
+                if (backup != null && backup.trim().length() > 0) try { ssh.runCommand("cat -- " + DiagnosticCommands.shellQuote(backup) + " > " + DiagnosticCommands.shellQuote(filePath), 60000); } catch (Exception ignored) {}
+                return "repair_file 發生錯誤，已盡可能回滾：" + e.getClass().getSimpleName() + "：" + e.getMessage();
+            }
+        } catch (Exception e) {
+            return "repair_file 失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage();
+        }
+    }
+
     private String executeOracleTool(OracleToolCall call) {
         if (call == null || call.tool == null) return "工具請求無效。";
         String command;
         int timeout = 90000;
         switch (call.tool) {
+            case "ssh_exec":
+            case "run_safe": {
+                String c = call.arg("command").trim();
+                if (!isSafeReadOnlyToolCommand(c)) return call.tool + " 被拒絕：只允許讀取型安全指令，且禁止 sudo/寫入/刪除/重啟/安裝。";
+                command = c;
+                break;
+            }
+            case "repair_file": {
+                String path = safeToolPath(call.arg("path"));
+                String instruction = call.arg("instruction");
+                if (path.isEmpty()) return "repair_file 需要 args.path，且路徑需在 /home、/opt、/srv、/var/www 內。";
+                if (instruction.trim().isEmpty()) instruction = "根據目前工具結果修正此檔案，保留原功能，避免新增風險。";
+                return runBridgeRepairFile(path, instruction);
+            }
             case "list_projects":
                 command = buildOracleLightScanCommand();
                 break;
@@ -547,12 +609,6 @@ public class MainActivity extends Activity {
                     + "(head -c 20000 " + DiagnosticCommands.shellQuote(path) + " 2>/dev/null || true)\n";
                 break;
             }
-            case "run_safe": {
-                String c = call.arg("command").trim();
-                if (!isSafeReadOnlyToolCommand(c)) return "run_safe 被拒絕：只允許讀取型安全指令，且禁止 sudo/寫入/刪除/重啟/安裝。";
-                command = c;
-                break;
-            }
             default:
                 return "未知工具：" + call.tool;
         }
@@ -605,6 +661,15 @@ public class MainActivity extends Activity {
         try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; }
     }
 
+    private static String unescapeJsonString(String s) {
+        if (s == null) return "";
+        return s.replace("\\n", "\n")
+            .replace("\\r", "\r")
+            .replace("\\t", "\t")
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\");
+    }
+
     private static class OracleToolCall {
         String tool = "";
         String args = "";
@@ -612,12 +677,22 @@ public class MainActivity extends Activity {
         String raw = "";
         String arg(String name) {
             if ("answer".equals(name)) return answer == null ? "" : answer;
-            if (args == null) return "";
-            Pattern p = Pattern.compile("(?i)(^|\\s)" + Pattern.quote(name) + "\\s*=\\s*([^\\s]+)");
-            Matcher m = p.matcher(args);
-            if (m.find()) return m.group(2).trim();
-            Pattern p2 = Pattern.compile("(?im)^\\s*" + Pattern.quote(name) + "\\s*[:：]\\s*(.+)$");
-            Matcher m2 = p2.matcher(raw == null ? "" : raw);
+            String source = raw == null ? "" : raw;
+            Pattern jsonString = Pattern.compile("(?is)\\\"" + Pattern.quote(name) + "\\\"\\s*:\\s*\\\"((?:\\\\\\.|[^\\\"])*)\\\"");
+            Matcher jm = jsonString.matcher(source);
+            if (jm.find()) return unescapeJsonString(jm.group(1)).trim();
+            Pattern jsonNumber = Pattern.compile("(?is)\\\"" + Pattern.quote(name) + "\\\"\\s*:\\s*([0-9]+)");
+            Matcher jn = jsonNumber.matcher(source);
+            if (jn.find()) return jn.group(1).trim();
+            String a = args == null ? "" : args;
+            Pattern quoted = Pattern.compile("(?i)(^|\\s)" + Pattern.quote(name) + "\\s*=\\s*\\\"([^\\\"]*)\\\"");
+            Matcher qm = quoted.matcher(a);
+            if (qm.find()) return qm.group(2).trim();
+            Pattern p = Pattern.compile("(?i)(^|\\s)" + Pattern.quote(name) + "\\s*=\\s*(.+?)(?=\\s+[a-zA-Z_][a-zA-Z0-9_]*\\s*=|$)");
+            Matcher mm = p.matcher(a);
+            if (mm.find()) return mm.group(2).trim();
+            Pattern p2 = Pattern.compile("(?ims)^\\s*" + Pattern.quote(name) + "\\s*[:：]\\s*(.+?)(?=^\\s*[A-Z_]+\\s*[:：]|\\z)");
+            Matcher m2 = p2.matcher(source);
             if (m2.find()) return m2.group(1).trim();
             return "";
         }
@@ -674,6 +749,11 @@ public class MainActivity extends Activity {
     }
 
     private String buildOracleAutoContextCommand() {
+        return buildOracleLightScanCommand();
+    }
+
+    private String buildOracleBootstrapScanCommand() {
+        // 相容舊版名稱；聊天頁不會自動呼叫。
         return buildOracleLightScanCommand();
     }
 
@@ -1705,6 +1785,46 @@ public class MainActivity extends Activity {
         }));
         box.addView(rawScan);
 
+        Button toolSelfTest = button("Oracle SSH 橋接工具自測：SSH / 專案 / Docker / 服務");
+        toolSelfTest.setOnClickListener(v -> runTask("正在執行 Oracle SSH 橋接工具自測…", () -> {
+            StringBuilder sb = new StringBuilder();
+            SshClient ssh = new SshClient(serverSettings);
+            String[] names = new String[] {"ssh_ping", "list_projects", "list_docker", "list_services"};
+            String dockerCmd = "set +e\n"
+                + "echo '==== docker ps ===='\n"
+                + "(docker ps -a --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}' 2>/dev/null || echo 'docker unavailable or permission denied')\n"
+                + "echo '==== docker compose ls ===='\n"
+                + "(docker compose ls 2>/dev/null || true)\n";
+            String servicesCmd = "set +e\n"
+                + "echo '==== failed services ===='\n"
+                + "(systemctl --failed --no-pager 2>/dev/null | head -n 30 || true)\n"
+                + "echo '==== likely services ===='\n"
+                + "(systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -Ei 'ai|llm|openclaw|hermes|oracle|docker|nginx|caddy|python|node|uvicorn|fastapi|ollama|vllm|kaggle' | head -n 80 || true)\n";
+            String[] commands = new String[] {
+                "whoami && hostname && uptime",
+                buildOracleLightScanCommand(),
+                dockerCmd,
+                servicesCmd
+            };
+            for (int i = 0; i < names.length; i++) {
+                long started = System.currentTimeMillis();
+                try {
+                    CommandResult r = ssh.runCommand(commands[i], 90000);
+                    sb.append("===== TOOL ").append(names[i]).append(" exit=").append(r.exitCode).append(" ms=").append(System.currentTimeMillis() - started).append(" =====\n");
+                    sb.append(compactForModel(maskSensitive(r.asText()), 5000)).append("\n\n");
+                    appLog("ORACLE TOOL SELFTEST｜" + names[i] + "｜exit=" + r.exitCode);
+                } catch (Exception e) {
+                    sb.append("===== TOOL ").append(names[i]).append(" FAILED =====\n");
+                    sb.append(e.getClass().getSimpleName()).append("：").append(e.getMessage()).append("\n\n");
+                    appLog("ORACLE TOOL SELFTEST｜" + names[i] + "｜failed｜" + e.getClass().getSimpleName() + "：" + e.getMessage());
+                }
+            }
+            String out = sb.toString();
+            store.appendHistory(new RepairHistory(now(), "Oracle SSH 橋接工具自測", out));
+            ui.post(() -> showTextDialog("Oracle SSH 橋接工具自測結果", out));
+        }));
+        box.addView(toolSelfTest);
+
         addSection(box, "安全執行指令");
         EditText cmd = edit("輸入要執行的指令，例如 systemctl status xxx --no-pager", true);
         cmd.setMinLines(2); box.addView(cmd);
@@ -2123,7 +2243,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v1.6.8\n");
+        sb.append("- App 版本：v1.7.1\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");
