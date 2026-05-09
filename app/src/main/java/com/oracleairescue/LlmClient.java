@@ -114,12 +114,30 @@ class LlmClient {
 
     RuntimeConfig fetchRuntimeConfig(UpdateSettings u) throws Exception {
         if (u.owner.trim().isEmpty() || u.repo.trim().isEmpty()) throw new IllegalArgumentException("請先填 GitHub owner/repo。");
-        String url = "https://raw.githubusercontent.com/" + u.owner.trim() + "/" + u.repo.trim() + "/" + u.branch.trim() + "/" + u.configPath.trim();
-        Request request = new Request.Builder().url(url).get().build();
-        try (Response response = client.newCall(request).execute()) {
-            String body = response.body() == null ? "" : response.body().string();
-            if (!response.isSuccessful()) throw new RuntimeException("取得倉庫設定失敗：HTTP " + response.code() + "\n" + body);
-            JSONObject root = new JSONObject(body);
+        String body;
+        if (u.githubToken != null && u.githubToken.trim().length() > 0) {
+            String apiPath = u.configPath.trim().replace(" ", "%20");
+            String url = "https://api.github.com/repos/" + u.owner.trim() + "/" + u.repo.trim() + "/contents/" + apiPath + "?ref=" + URLEncoder.encode(u.branch.trim(), "UTF-8");
+            Request request = new Request.Builder()
+                .url(url)
+                .addHeader("Accept", "application/vnd.github.raw+json")
+                .addHeader("Authorization", "Bearer " + u.githubToken.trim())
+                .addHeader("X-GitHub-Api-Version", "2022-11-28")
+                .get()
+                .build();
+            try (Response response = client.newCall(request).execute()) {
+                body = response.body() == null ? "" : response.body().string();
+                if (!response.isSuccessful()) throw new RuntimeException("取得私人倉庫設定失敗：HTTP " + response.code() + "\n" + body + "\n\n請確認 GitHub Token 對 dinosonicgo3/Mobile-LLM 有 Contents: Read 權限。");
+            }
+        } else {
+            String url = "https://raw.githubusercontent.com/" + u.owner.trim() + "/" + u.repo.trim() + "/" + u.branch.trim() + "/" + u.configPath.trim();
+            Request request = new Request.Builder().url(url).get().build();
+            try (Response response = client.newCall(request).execute()) {
+                body = response.body() == null ? "" : response.body().string();
+                if (!response.isSuccessful()) throw new RuntimeException("取得公開倉庫設定失敗：HTTP " + response.code() + "\n" + body + "\n\n如果這是私人倉庫，請在更新頁或 Kaggle 頁填入 GitHub Token。");
+            }
+        }
+        JSONObject root = new JSONObject(body);
             RuntimeConfig cfg = new RuntimeConfig();
             cfg.version = root.optString("version", "repo-config");
             cfg.systemPrompt = root.optString("systemPrompt", RepairPrompts.DEFAULT_SYSTEM_PROMPT);
@@ -209,10 +227,16 @@ class LlmClient {
     List<ReleaseInfo> listReleases(UpdateSettings u) throws Exception {
         if (u.owner.trim().isEmpty() || u.repo.trim().isEmpty()) throw new IllegalArgumentException("請先填 GitHub owner/repo。");
         String url = "https://api.github.com/repos/" + u.owner.trim() + "/" + u.repo.trim() + "/releases?per_page=8";
-        Request request = new Request.Builder().url(url).addHeader("Accept", "application/vnd.github+json").get().build();
+        Request.Builder rb = new Request.Builder()
+            .url(url)
+            .addHeader("Accept", "application/vnd.github+json")
+            .addHeader("X-GitHub-Api-Version", "2022-11-28")
+            .get();
+        if (u.githubToken != null && u.githubToken.trim().length() > 0) rb.addHeader("Authorization", "Bearer " + u.githubToken.trim());
+        Request request = rb.build();
         try (Response response = client.newCall(request).execute()) {
             String body = response.body() == null ? "" : response.body().string();
-            if (!response.isSuccessful()) throw new RuntimeException("查詢 GitHub Releases 失敗：HTTP " + response.code() + "\n" + body);
+            if (!response.isSuccessful()) throw new RuntimeException("查詢 GitHub Releases 失敗：HTTP " + response.code() + "\n" + body + "\n\n如果這是私人倉庫，請在更新頁或 Kaggle 頁填入 GitHub Token，且 Token 需要 Contents: Read 權限。");
             JSONArray arr = new JSONArray(body);
             List<ReleaseInfo> out = new ArrayList<>();
             for (int i = 0; i < arr.length(); i++) {

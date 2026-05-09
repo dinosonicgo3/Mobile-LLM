@@ -202,7 +202,7 @@ https://raw.githubusercontent.com/dinosonicgo3/Mobile-LLM/main/oracle-ai-rescue-
 
 到 `Settings → Secrets and variables → Actions → New repository secret` 新增：
 
-- `KAGGLE_KEY`：你的 kaggle.json 裡面的 key
+- `KAGGLE_API_TOKEN`：你的 kaggle.json 裡面的 key
 
 `KAGGLE_USERNAME` 已在 workflow 內預設為 `dinosonicgo`，不需要再建立這個 Secret。
 - `GH_CONFIG_PAT`：細粒度 GitHub Token，只給此 repo `Contents: Read and write`
@@ -225,11 +225,11 @@ dinosonicgo
 因此 GitHub Secrets 只需要新增：
 
 ```text
-KAGGLE_KEY
+KAGGLE_API_TOKEN
 GH_CONFIG_PAT
 ```
 
-`KAGGLE_KEY` 來自 Kaggle 下載的 `kaggle.json` 裡面的 `key` 欄位。
+`KAGGLE_API_TOKEN` 來自 Kaggle 下載的 `kaggle.json` 裡面的 `key` 欄位。
 `GH_CONFIG_PAT` 用於 Kaggle 端把目前 cloudflared / OpenAI-compatible API 端點寫回 `oracle-ai-rescue-config.json`。
 
 
@@ -243,3 +243,33 @@ GH_CONFIG_PAT
 - Build Debug APK / Build Release APK 會先檢查簽章檔是否存在
 
 從固定簽章版開始，後續 APK 才能直接覆蓋安裝並保留 App 內資料。
+
+
+## v1.3.9 Kaggle 新版 API Token 支援
+
+此版改為優先使用 GitHub Secret：
+
+```text
+KAGGLE_API_TOKEN
+```
+
+這是 Kaggle 新版 token，通常以 `KGAT_` 開頭。Workflow 會把它寫入：
+
+```text
+~/.kaggle/access_token
+```
+
+保留舊版 `KAGGLE_KEY` 相容，但建議使用 `KAGGLE_API_TOKEN`。
+
+請勿把真實 GitHub Token 或 Kaggle Token 寫進程式碼、GitHub repo、README 或聊天內容。
+
+
+## v1.4.0 私人 GitHub 倉庫支援
+
+此版修正私人倉庫下列功能：
+
+- 抓取 `oracle-ai-rescue-config.json` 時會使用 App 內儲存的 GitHub Token。
+- 查看 GitHub Releases 時會使用 App 內儲存的 GitHub Token。
+- 更新頁新增 GitHub Token 欄位；可與 Kaggle 頁第一欄使用同一把 Token。
+
+請勿把 GitHub Token 或 Kaggle Token 寫進程式碼、README、GitHub repo 或聊天內容。Token 只應在手機 App 或 GitHub Secrets 中保存。

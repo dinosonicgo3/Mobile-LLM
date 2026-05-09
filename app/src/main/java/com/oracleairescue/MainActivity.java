@@ -117,7 +117,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.3.8");
+        title.setText("甲骨文雲端AI  v1.4.0");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -588,7 +588,7 @@ public class MainActivity extends Activity {
         box.addView(resetEstimate);
 
         addSection(box, "你在 Kaggle/GitHub 需要做的一次性設定");
-        box.addView(label("Kaggle 使用者名稱已內建：dinosonicgo。\n1. 到 Kaggle 帳號設定產生 kaggle.json API Token。\n2. 到 GitHub repo → Settings → Secrets and variables → Actions → New repository secret。\n3. 只需要新增 KAGGLE_KEY。\n4. 新增 GH_CONFIG_PAT：細粒度 GitHub token，只給 Mobile-LLM 這個 repo 的 Contents: Read and write。\n5. 手機 App 這裡的 GitHub Token 只需 Actions: Read and write，用來按鈕觸發 workflow。", 14, false));
+        box.addView(label("Kaggle 使用者名稱已內建：dinosonicgo。\nGitHub Secrets 只需要：KAGGLE_API_TOKEN 與 GH_CONFIG_PAT。\nKAGGLE_API_TOKEN 是 Kaggle 新版 API Token，通常以 KGAT_ 開頭。\nGH_CONFIG_PAT 是 GitHub Token，需 Contents: Read and write。\n手機 App 第一欄 GitHub Token 需 Actions: Read and write，用來觸發啟動 workflow；可與 GH_CONFIG_PAT 使用同一把新 token。", 14, false));
     }
 
     private void syncKaggleStatusToUi(TextView target, boolean showDialog) {
@@ -736,6 +736,11 @@ public class MainActivity extends Activity {
         EditText repo = edit("Repository 名稱", false); repo.setText(updateSettings.repo); box.addView(repo);
         EditText branch = edit("分支，通常 main", false); branch.setText(updateSettings.branch); box.addView(branch);
         EditText configPath = edit("設定檔路徑", false); configPath.setText(updateSettings.configPath); box.addView(configPath);
+        EditText ghToken = edit("GitHub Token，私人倉庫查詢設定/Releases 必填；可與 Kaggle 頁同一把", false);
+        ghToken.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        ghToken.setText(updateSettings.githubToken);
+        box.addView(ghToken);
+        box.addView(label("你的 Mobile-LLM 是私人倉庫，所以『抓取設定』與『查看 Releases』需要 GitHub Token。這個 Token 只會加密保存在手機本機，不會寫入 GitHub 倉庫。", 13, false));
         TextView current = label("目前設定版：" + runtimeConfig.version + "\n額外診斷指令：" + runtimeConfig.extraDiagnosticCommands.size(), 14, false);
         box.addView(current);
 
@@ -746,6 +751,7 @@ public class MainActivity extends Activity {
             updateSettings.repo = repo.getText().toString().trim();
             updateSettings.branch = branch.getText().toString().trim();
             updateSettings.configPath = configPath.getText().toString().trim();
+            updateSettings.githubToken = ghToken.getText().toString().trim();
             store.saveUpdateSettings(updateSettings);
             toast("已儲存");
         });

@@ -1,5 +1,5 @@
 {
-  "version": "v1.3.8-signing-key-upload-fix",
+  "version": "v1.4.0-private-repo-github-auth",
   "systemPrompt": "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。你可以進行一般聊天、程式修正、LLM API 設定、Kaggle/NVIDIA NIM/Google API 診斷，以及 Oracle Cloud 維修。你必須保持上下文，不得只根據最後一句話回答。",
   "extraDiagnosticCommands": [
     "date",
@@ -26,11 +26,17 @@
     "estimatedUsedMinutes": 0,
     "estimatedRemainingMinutes": 1800,
     "weekResetAtUtc8": "",
-    "message": "Kaggle 使用者名稱已內建為 dinosonicgo；仍需在 GitHub Secrets 設定 KAGGLE_KEY 與 GH_CONFIG_PAT。",
-    "username": "dinosonicgo"
+    "message": "v1.3.9 使用 KAGGLE_API_TOKEN；不要把真實 token 寫進 repo 或貼給任何 AI。",
+    "username": "dinosonicgo",
+    "secretName": "KAGGLE_API_TOKEN",
+    "tokenFormat": "KGAT_..."
   },
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。"
+  },
+  "github": {
+    "privateRepoSupported": true,
+    "message": "更新頁與 Releases 查詢會使用 App 內儲存的 GitHub Token 讀取私人倉庫。不要把 token 寫入 repo。"
   }
 }

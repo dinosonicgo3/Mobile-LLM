@@ -21,6 +21,7 @@ permissions:
 
 env:
   KAGGLE_USERNAME: dinosonicgo
+  KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
   KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
 
 jobs:
@@ -46,13 +47,21 @@ jobs:
           mkdir -p ~/.kaggle
           python - <<'PY'
           import json, os, pathlib
-          user = os.environ.get('KAGGLE_USERNAME', '').strip()
-          key = os.environ.get('KAGGLE_KEY', '').strip()
-          if not user or not key:
-              raise SystemExit('Missing GitHub secret KAGGLE_KEY')
-          pathlib.Path.home().joinpath('.kaggle/kaggle.json').write_text(json.dumps({'username': user, 'key': key}), encoding='utf-8')
+          token = os.environ.get('KAGGLE_API_TOKEN', '').strip()
+          old_key = os.environ.get('KAGGLE_KEY', '').strip()
+          user = os.environ.get('KAGGLE_USERNAME', 'dinosonicgo').strip()
+          kaggle_dir = pathlib.Path.home().joinpath('.kaggle')
+          if token:
+              # Kaggle 新版 API Token：寫入 ~/.kaggle/access_token
+              kaggle_dir.joinpath('access_token').write_text(token, encoding='utf-8')
+          elif old_key:
+              # 舊版 kaggle.json 相容模式
+              kaggle_dir.joinpath('kaggle.json').write_text(json.dumps({'username': user, 'key': old_key}), encoding='utf-8')
+          else:
+              raise SystemExit('Missing GitHub secret KAGGLE_API_TOKEN')
           PY
-          chmod 600 ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/access_token 2>/dev/null || true
+          chmod 600 ~/.kaggle/kaggle.json 2>/dev/null || true
 
       - name: Generate Kaggle kernel package
         env:
