@@ -231,3 +231,15 @@ GH_CONFIG_PAT
 
 `KAGGLE_KEY` 來自 Kaggle 下載的 `kaggle.json` 裡面的 `key` 欄位。
 `GH_CONFIG_PAT` 用於 Kaggle 端把目前 cloudflared / OpenAI-compatible API 端點寫回 `oracle-ai-rescue-config.json`。
+
+
+## v1.3.8 固定簽章檔上傳修正
+
+前一版打包失敗原因是 `app/oracleairescue-update-key.jks` 被 `.gitignore` 擋住，導致 GitHub Actions 找不到固定簽章檔。
+
+此版已修正：
+- `.gitignore` 不再忽略 `.jks`
+- 專案包內包含 `app/oracleairescue-update-key.jks`
+- Build Debug APK / Build Release APK 會先檢查簽章檔是否存在
+
+從固定簽章版開始，後續 APK 才能直接覆蓋安裝並保留 App 內資料。

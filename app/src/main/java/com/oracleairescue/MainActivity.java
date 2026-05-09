@@ -117,7 +117,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.3.7");
+        title.setText("甲骨文雲端AI  v1.3.8");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));

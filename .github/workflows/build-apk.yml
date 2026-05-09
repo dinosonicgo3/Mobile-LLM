@@ -35,6 +35,11 @@ jobs:
         with:
           gradle-version: 8.10.2
 
+      - name: Verify stable signing key exists
+        run: |
+          ls -la app/oracleairescue-update-key.jks
+          test -f app/oracleairescue-update-key.jks
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 

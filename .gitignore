@@ -2,5 +2,5 @@
 build/
 app/build/
 local.properties
-*.jks
-*.keystore
+
+# Keystore for this private rescue app is intentionally committed so APK updates keep the same signature.
