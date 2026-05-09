@@ -1,0 +1,3 @@
+OracleAIRescue v2.3.0：保留雲端 Agent Runtime 主架構，學習 Gemini 化繁為簡原則；模型只看到單一 run_terminal_command 雲端本機終端工具，不提供固定專案清單，每次任務先由模型透過工具查證當下 Oracle 環境，再修程式。
+versionCode=63
+versionName=2.3.0

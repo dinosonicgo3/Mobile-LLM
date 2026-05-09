@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.2.0
+"""Oracle AI Rescue Agent v2.3.0
 Runs on the Oracle host. The Android app is only a remote controller/bridge.
 Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
 Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
@@ -784,7 +784,7 @@ def execute_tool(req, models, tool_obj):
         return discover_projects(args.get("query") or req.get("question") or "", bool(args.get("include_all", False)))
     if tool == "resolve_project_identity":
         return resolve_project_identity(args.get("query") or req.get("question") or "", args.get("paths"))
-    if tool in ("ssh_exec", "shell_exec"):
+    if tool in ("ssh_exec", "shell_exec", "run_ssh_command", "run_terminal_command", "terminal_exec"):
         return run_full(args.get("command") or "", timeout=300)
     if tool == "remove_project":
         return remove_project(args.get("target") or "", args.get("paths"))
@@ -803,42 +803,46 @@ def execute_tool(req, models, tool_obj):
 
 
 # =========================
-# v2.2.0 native tool-calling loop
+# v2.3.0 cloud-local terminal runtime tool loop
 # =========================
 
 def tool_schemas():
-    """OpenAI-compatible tools schema used by NVIDIA NIM / Google OpenAI endpoint.
+    """Single cloud-local terminal tool.
 
-    This is the single generic tool interface for all maintenance tasks. It is
-    not a special case for project search: the same loop handles discovery,
-    reading, repair, deletion, service control, tests and general shell work.
+    This is intentionally one generic terminal tool, not a hardcoded project
+    tool and not a long list of special-case tools.  The model decides which
+    shell commands to run, but the commands execute locally on the Oracle VM
+    where this Agent Runtime is already running.
     """
-    any_obj = {"type": "object", "additionalProperties": True}
-    return [
-        {"type":"function","function":{"name":"maintenance_plan","description":"Create an internal maintenance plan before risky or code-changing work. Does not modify files.","parameters":{"type":"object","properties":{"question":{"type":"string"},"discovery":{"type":"string"}},"required":[]}}},
-        {"type":"function","function":{"name":"discover_projects","description":"Discover current Oracle projects, files, services, processes, crontab and Docker evidence for a query. Use for any project/file/service/log existence or maintenance task before guessing.","parameters":{"type":"object","properties":{"query":{"type":"string"},"include_all":{"type":"boolean"}},"required":[]}}},
-        {"type":"function","function":{"name":"resolve_project_identity","description":"Read README/config/git/recent files from candidate paths and identify the correct/current project.","parameters":{"type":"object","properties":{"query":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}},"required":[]}}},
-        {"type":"function","function":{"name":"shell_exec","description":"Execute a full shell command on the Oracle host. Full authority is allowed; use sudo -n when root is needed and report permission errors.","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}},
-        {"type":"function","function":{"name":"ssh_exec","description":"Alias of shell_exec: execute a full shell command on the Oracle host.","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}},
-        {"type":"function","function":{"name":"read_file","description":"Read an absolute-path file from the Oracle host.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},
-        {"type":"function","function":{"name":"list_dir","description":"List a directory and shallow files from the Oracle host.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},
-        {"type":"function","function":{"name":"repair_file","description":"Repair a source/config file with automatic backup, write, syntax/test validation, 31B verification and rollback on failure. Use this for code/config changes.","parameters":{"type":"object","properties":{"path":{"type":"string"},"instruction":{"type":"string"}},"required":["path","instruction"]}}},
-        {"type":"function","function":{"name":"remove_project","description":"Fully remove/quarantine a project with backup, process/service/crontab cleanup and verification. Powerful/destructive.","parameters":{"type":"object","properties":{"target":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}},"required":[]}}},
-    ]
+    return [{
+        "type": "function",
+        "function": {
+            "name": "run_terminal_command",
+            "description": "Execute a shell command locally on the current Oracle Cloud Ubuntu host. Use it to inspect the live environment, discover projects, read files/logs, edit code, run tests, control services, backup, cleanup and maintenance.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute on this Oracle host"}
+                },
+                "required": ["command"]
+            }
+        }
+    }]
 
 
 def build_runtime_system(req):
-    extra = (req.get("system_prompt") or "").strip()
-    extra = limit(extra, 1800) if extra else ""
+    # v2.3.0：雲端本機 Runtime，不把目前專案清單寫死給模型。
+    # 模型只知道自己在 Oracle Cloud Ubuntu 主機本機，可用單一終端工具查證當下環境。
     return (
-        "你是執行在 Oracle 主機本機的程式維護 Agent。你必須使用原生 tools/tool_calls 決定工具，不要用長篇文字假裝工具。"
-        "工具結果高於模型推測；需要查證真實環境時先呼叫工具。"
-        "你有完整權限，可用 shell_exec/ssh_exec 執行 rm、rm -rf、pkill、systemctl、docker、crontab、sudo -n；不可要求 sudo 密碼。"
-        "主模型不備援；若主模型失敗要報錯。NVIDIA NIM 大模型等待上限 300 秒。"
-        "修程式必須用 repair_file，讓程式強制 backup→write→test→31B verify→rollback。"
-        "高風險刪除或停服務前先用 maintenance_plan/discover_projects/resolve_project_identity 建立證據。"
-        "最終回答只根據工具結果與已執行內容，不可宣稱未做的測試或不存在的證據。"
-        + ("\n\n[額外規則摘要]\n" + extra if extra else "")
+        "你是 Oracle Cloud Ubuntu 主機上的程式維護 Agent，正在這台雲端主機本機執行。"
+        "你不能假設目前有哪些專案、檔案、服務或流程；它們會變動。"
+        "每次任務都要先用 run_terminal_command 查證當下真實環境，再根據工具結果行動。"
+        "run_terminal_command 會在目前 Oracle 主機本機 shell 執行指令，不是讓使用者手動操作。"
+        "請盡快呼叫工具；不要在未查證主機前長篇空談或憑記憶回答。"
+        "查專案、讀檔、查 log、查服務、查進程、修改程式、測試、刪除或清理，都使用同一個終端工具。"
+        "修改、覆寫、刪除、停止服務或殺進程前，要先用工具確認目標並建立備份或隔離。"
+        "需要 root 權限時只能使用 sudo -n；不可要求使用者輸入 sudo 密碼。"
+        "最終回答只能根據已執行工具的結果；沒查證不可說已確認，沒測試不可說測試通過。"
     )
 
 
@@ -955,15 +959,9 @@ def legacy_json_tool_call(cfg, messages, timeout=90):
     """
     short_tools = """
 只輸出 JSON，不要 Markdown，不要解釋。格式：
-{"tool":"discover_projects","args":{"query":"..."}}
-或 {"tool":"resolve_project_identity","args":{"query":"...","paths":["..."]}}
-或 {"tool":"shell_exec","args":{"command":"..."}}
-或 {"tool":"read_file","args":{"path":"/..."}}
-或 {"tool":"list_dir","args":{"path":"/..."}}
-或 {"tool":"repair_file","args":{"path":"/...","instruction":"..."}}
-或 {"tool":"remove_project","args":{"target":"...","paths":["..."]}}
-或 {"tool":"maintenance_plan","args":{"question":"..."}}
+{"tool":"run_terminal_command","args":{"command":"..."}}
 或 {"tool":"final","answer":"..."}
+所有查專案、讀檔、查 log、修程式、跑測試、清理、刪除、服務控制，都用 run_terminal_command 轉成雲端本機 shell 指令。
 """
     compact = []
     for m in messages[-6:]:
@@ -986,15 +984,14 @@ def legacy_json_tool_call(cfg, messages, timeout=90):
 
 
 def call_main_for_tools(req, cfg, messages):
-    # Native tool calls are the primary path. Keep the prompt compact and use a
-    # smaller output budget because a tool call should not require long prose.
+    # Native terminal tool calls are the primary path. Keep prompt/schema minimal, Gemini-style.
     timeout = int(req.get("tool_model_timeout_seconds", 300))
     try:
-        return openai_chat_completion(cfg, messages, timeout=timeout, tools=tool_schemas(), tool_choice="auto", stream=True, max_tokens=int(req.get("tool_router_max_tokens", 768))), "native-tools-stream"
+        return openai_chat_completion(cfg, messages, timeout=timeout, tools=tool_schemas(), tool_choice="auto", stream=True, max_tokens=int(req.get("tool_router_max_tokens", 384))), "native-tools-stream"
     except Exception as e1:
         log_event("NATIVE_TOOL_STREAM_FAILED " + type(e1).__name__ + ": " + str(e1))
         try:
-            return openai_chat_completion(cfg, messages, timeout=timeout, tools=tool_schemas(), tool_choice="auto", stream=False, max_tokens=int(req.get("tool_router_max_tokens", 768))), "native-tools"
+            return openai_chat_completion(cfg, messages, timeout=timeout, tools=tool_schemas(), tool_choice="auto", stream=False, max_tokens=int(req.get("tool_router_max_tokens", 384))), "native-tools"
         except Exception as e2:
             log_event("NATIVE_TOOL_NONSTREAM_FAILED " + type(e2).__name__ + ": " + str(e2))
             # Compatibility path: only for models/endpoints that reject tools.
@@ -1016,7 +1013,7 @@ def is_mutating_tool(tool_name, args):
     name = (tool_name or "").strip()
     if name in ("repair_file", "remove_project"):
         return True
-    if name in ("shell_exec", "ssh_exec"):
+    if name in ("shell_exec", "ssh_exec", "run_ssh_command", "run_terminal_command", "terminal_exec"):
         cmd = str((args or {}).get("command") or "").lower()
         risky = ["rm ", "rm -rf", "mv ", "cp ", "tee ", ">", ">>", "pkill", "killall", "systemctl stop", "systemctl disable", "docker rm", "crontab", "chmod", "chown", "apt ", "pip install", "npm install"]
         return any(x in cmd for x in risky)
@@ -1074,7 +1071,7 @@ def run_native_tool_loop(req, models):
                 out = limit(res.get("output"), MAX_OBS)
                 log_event(f"NATIVE_TOOL_END step={step} tool={name} ok={res.get('ok')} output_length={len(str(res.get('output') or ''))}")
                 transcript.append(f"STEP {step} TOOL {name} ok={res.get('ok')}\n{out}")
-                messages.append({"role":"tool", "tool_call_id": tc.get("id") or f"call_{step}", "content": out})
+                messages.append({"role":"tool", "tool_call_id": tc.get("id") or f"call_{step}", "name": name or "run_terminal_command", "content": out})
             continue
         # No tool calls: treat content as final answer, guarded by static and risk-based 31B verification.
         answer = content.strip()
@@ -1124,15 +1121,15 @@ def main():
     req = json.loads(Path(ns.request).read_text(encoding="utf-8"))
     global SESSION_LOG_PATH
     SESSION_LOG_PATH = req.get("session_log_path") or str(Path.home() / ".oracle_ai_rescue" / "sessions" / ((req.get("session_id") or ("session_" + time.strftime("%Y%m%d_%H%M%S"))) + ".log"))
-    log_event("SESSION_START version=2.2.0 mode=" + str(req.get("runtime_mode") or "cloud-agent-native-tools") + " session_id=" + str(req.get("session_id") or ""))
+    log_event("SESSION_START version=2.3.0 mode=" + str(req.get("runtime_mode") or "cloud-local-terminal-runtime") + " session_id=" + str(req.get("session_id") or ""))
     main_model = req.get("main_model") or {}
     models = [main_model] if main_model and (main_model.get("api_key") or "").strip() else []
     if not models:
         log_event("MAIN_MODEL_MISSING api_key_or_config_empty")
         print("# Oracle Rescue Agent 失敗\n\n主模型沒有可用 LLM API Key。主模型不使用備援；請修正目前選定模型的 API Key / Base URL / 模型名稱。")
         return 2
-    # v2.2.0：統一使用 OpenAI-compatible native tools/tool_choice tool loop。
-    # 不做單項特例；查專案、修程式、讀檔、測試、刪除、服務控制都走同一套工具循環。
+    # v2.3.0：統一使用單一 cloud-local run_terminal_command 工具循環。
+    # 不做單項特例；查專案、修程式、讀檔、測試、刪除、服務控制都走同一套雲端本機終端工具循環。
     return run_native_tool_loop(req, models)
 
 if __name__ == "__main__":

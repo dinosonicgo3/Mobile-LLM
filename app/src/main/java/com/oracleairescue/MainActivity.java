@@ -81,7 +81,7 @@ public class MainActivity extends Activity {
 
     private final String[] providerLabels = new String[] {"Google Gemini", "NVIDIA NIM", "Kaggle Qwen / OpenAI 相容", "本機 Gemma 4", "自訂 OpenAI 相容"};
     private final String[] providerCodes = new String[] {"gemini", "nim", "kaggle", "local_gemma", "custom"};
-    private static final String APP_VERSION_FALLBACK = "2.2.0";
+    private static final String APP_VERSION_FALLBACK = "2.3.0";
 
     private String appVersionName() {
         try {
@@ -385,7 +385,7 @@ public class MainActivity extends Activity {
     }
 
     private String runOracleMaintenanceAgent(String userText) throws Exception {
-        // v2.2.0 正式架構：單一主路徑採用雲端 Agent Runtime。
+        // v2.3.0 正式架構：單一主路徑採用雲端 Agent Runtime。
         // App 只負責部署、啟動、等待、讀取 session log 與顯示結果；
         // 不再把 App 直連 SSH 工具橋接作為第二套 Agent 主流程，避免雙路徑造成規範不一致與除錯混亂。
         return runOracleRescueAgent(userText);
@@ -416,10 +416,10 @@ public class MainActivity extends Activity {
         request.put("session_id", sessionId);
         request.put("session_log_path", sessionLogPath);
         request.put("session_dir", sessionDir);
-        request.put("runtime_mode", "cloud-agent-runtime-only");
+        request.put("runtime_mode", "cloud-local-terminal-runtime");
         ssh.uploadText(requestPath, request.toString(), 0600);
 
-        ui.post(() -> setStatus("Oracle Rescue Agent 正在雲端 Runtime 執行…"));
+        ui.post(() -> setStatus("Oracle Rescue Agent 正在雲端本機 Runtime 執行…"));
         String script = "set +e\n"
             + "SESSION_ID=" + DiagnosticCommands.shellQuote(sessionId) + "\n"
             + "LOG=" + DiagnosticCommands.shellQuote(sessionLogPath) + "\n"
@@ -512,17 +512,17 @@ public class MainActivity extends Activity {
 
     private org.json.JSONObject buildRescueAgentRequest(String userText) throws Exception {
         org.json.JSONObject root = new org.json.JSONObject();
-        root.put("version", "2.2.0");
+        root.put("version", "2.3.0");
         root.put("question", userText);
         root.put("system_prompt", runtimeConfig == null ? "" : runtimeConfig.systemPrompt);
         root.put("max_steps", 12);
         root.put("tool_model_timeout_seconds", 300);
         root.put("repair_model_timeout_seconds", 300);
         root.put("verifier_timeout_seconds", 300);
-        root.put("tool_router_max_tokens", 768);
-        root.put("legacy_tool_router_timeout_seconds", 120);
+        root.put("tool_router_max_tokens", 384);
+        root.put("legacy_tool_router_timeout_seconds", 90);
         root.put("always_verify_final", false);
-        // v2.2.0 規則：
+        // v2.3.0 規則：
         // NVIDIA NIM 是公共平台；主模型與 31B 驗證模型每次 API 回覆等待最多 300 秒。
         // 超過 300 秒才視為 timeout；主模型 timeout 仍直接報錯，不使用備援。
         // v2.0.2 規則：
@@ -896,7 +896,7 @@ public class MainActivity extends Activity {
         StringBuilder sh = new StringBuilder();
         sh.append("set +e\n");
         sh.append("QUERY=").append(DiagnosticCommands.shellQuote(q)).append("\n");
-        sh.append("echo '==== DISCOVER_PROJECTS v2.2.0 ===='\n");
+        sh.append("echo '==== DISCOVER_PROJECTS v2.3.0 ===='\n");
         sh.append("echo \"query=$QUERY\"\n");
         sh.append("echo '==== candidate project dirs ===='\n");
         sh.append("for ROOT in /home/ubuntu /home/ubuntu/ai-agents /home/ubuntu/.config /home/ubuntu/_runtime /home/ubuntu/projects /home/ubuntu/apps /opt /srv /var/www /usr/local; do\n");
@@ -932,7 +932,7 @@ public class MainActivity extends Activity {
             return sh.toString();
         }
         sh.append("P=").append(DiagnosticCommands.shellQuote(p)).append("\n");
-        sh.append("echo '==== RESOLVE_PROJECT_IDENTITY v2.2.0 ===='\n");
+        sh.append("echo '==== RESOLVE_PROJECT_IDENTITY v2.3.0 ===='\n");
         sh.append("echo \"query=$QUERY\"; echo \"path=$P\"\n");
         sh.append("echo '==== metadata ===='; ls -la \"$P\" 2>/dev/null | head -n 120 || true\n");
         sh.append("echo '==== git remote ===='; (cd \"$P\" 2>/dev/null && git remote -v 2>/dev/null && git status --short 2>/dev/null | head -n 80) || true\n");
