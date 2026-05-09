@@ -24,6 +24,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -62,6 +63,7 @@ public class MainActivity extends Activity {
 
     private Spinner chatModelSpinner;
     private TextView chatLogView;
+    private ScrollView chatScrollView;
     private Markwon markwon;
     private EditText chatInput;
     private static final int REQUEST_IMPORT_SSH_KEY = 8801;
@@ -83,7 +85,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v1.5.3｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v1.5.4｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -126,7 +128,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.5.3");
+        title.setText("甲骨文雲端AI  v1.5.4");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -137,10 +139,16 @@ public class MainActivity extends Activity {
         status.setPadding(dp(12), 0, dp(12), dp(8));
         root.addView(status);
 
+        HorizontalScrollView navScroll = new HorizontalScrollView(this);
+        navScroll.setHorizontalScrollBarEnabled(false);
+        navScroll.setFillViewport(false);
+
         LinearLayout nav = new LinearLayout(this);
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setPadding(dp(6), dp(4), dp(6), dp(4));
-        root.addView(nav);
+        navScroll.addView(nav, new HorizontalScrollView.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(navScroll, new LinearLayout.LayoutParams(-1, dp(50)));
+
         addNav(nav, "聊天", selected, v -> showChatPage());
         addNav(nav, "設定", selected, v -> showSettingsPage());
         addNav(nav, "本機", selected, v -> showLocalGemmaPage());
@@ -154,8 +162,14 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(text.equals(selected) ? "● " + text : text);
         b.setAllCaps(false);
+        b.setTextSize(12);
+        b.setGravity(Gravity.CENTER);
+        b.setSingleLine(true);
+        b.setMinWidth(0);
+        b.setMinHeight(0);
+        b.setPadding(dp(2), 0, dp(2), 0);
         b.setOnClickListener(l);
-        nav.addView(b, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        nav.addView(b, new LinearLayout.LayoutParams(dp(78), dp(40)));
     }
 
     private LinearLayout page(String selected) {
@@ -170,13 +184,20 @@ public class MainActivity extends Activity {
     }
 
     private void showChatPage() {
-        LinearLayout box = page("聊天");
+        showShell("聊天");
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(12), dp(6), dp(12), dp(8));
+        root.addView(box, new LinearLayout.LayoutParams(-1, 0, 1));
 
         LinearLayout chatTop = new LinearLayout(this);
         chatTop.setOrientation(LinearLayout.HORIZONTAL);
         chatTop.setGravity(Gravity.CENTER_VERTICAL);
+
         TextView chatTitle = label("聊天與上下文", 18, true);
         chatTop.addView(chatTitle, new LinearLayout.LayoutParams(0, -2, 1));
+
         Button chatTools = button("⚙");
         chatTools.setTextSize(22);
         chatTools.setMinWidth(dp(48));
@@ -185,29 +206,34 @@ public class MainActivity extends Activity {
         chatTop.addView(chatTools, new LinearLayout.LayoutParams(dp(52), dp(46)));
         box.addView(chatTop);
 
-        TextView hint = label("這裡可當一般手機 LLM 聊天使用，也可用來維修 Oracle。聊天會自動帶入最近上下文，避免剛說完就忘記。", 14, false);
+        TextView hint = label("一般 LLM 聊天 / Oracle 維修；支援 Markdown，回覆會自動捲到底。", 13, false);
         box.addView(hint);
 
         chatModelSpinner = new Spinner(this);
         refreshChatModelSpinner();
-        box.addView(chatModelSpinner);
-        box.addView(label("目前平台：" + providerTitle(modelSettings.provider) + "｜Temperature " + modelSettings.temperature + "｜上下文 " + modelSettings.maxContextCharacters + " 字元｜Markdown 顯示：已啟用｜Gemini 思考：已啟用且隱藏", 13, false));
+        box.addView(chatModelSpinner, new LinearLayout.LayoutParams(-1, dp(44)));
+
+        TextView meta = label("平台：" + providerTitle(modelSettings.provider) + "｜Temp " + modelSettings.temperature + "｜上下文 " + modelSettings.maxContextCharacters + "｜MD 已啟用", 12, false);
+        box.addView(meta);
+
+        chatScrollView = new ScrollView(this);
+        chatScrollView.setFillViewport(true);
+        chatScrollView.setSmoothScrollingEnabled(true);
+        chatScrollView.setBackgroundColor(0xffffffff);
 
         chatLogView = label("", 14, false);
-        chatLogView.setTextIsSelectable(true);
-        chatLogView.setMovementMethod(new ScrollingMovementMethod());
-        chatLogView.setBackgroundColor(0xffffffff);
+        chatLogView.setTextIsSelectable(false);
         chatLogView.setPadding(dp(10), dp(10), dp(10), dp(10));
-        // v1.4.8：LOG/清空按鈕已移入右上角齒輪，所以聊天顯示區加高，不再留下原本底部按鈕空白。
-        box.addView(chatLogView, new LinearLayout.LayoutParams(-1, dp(470)));
+        chatScrollView.addView(chatLogView, new ScrollView.LayoutParams(-1, -2));
+        box.addView(chatScrollView, new LinearLayout.LayoutParams(-1, 0, 1));
         renderChatLog();
 
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
         inputRow.setGravity(Gravity.CENTER_VERTICAL);
-        inputRow.setPadding(0, dp(2), 0, 0);
+        inputRow.setPadding(0, dp(6), 0, 0);
 
-        chatInput = edit("輸入訊息，例如：幫我檢查 Oracle AI 助理為什麼故障", true);
+        chatInput = edit("輸入訊息", true);
         chatInput.setMinLines(1);
         chatInput.setMaxLines(3);
 
@@ -217,8 +243,8 @@ public class MainActivity extends Activity {
         send.setMinHeight(dp(46));
         send.setOnClickListener(v -> sendChat());
 
-        inputRow.addView(chatInput, new LinearLayout.LayoutParams(0, dp(52), 1));
-        inputRow.addView(send, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        inputRow.addView(chatInput, new LinearLayout.LayoutParams(0, dp(54), 1));
+        inputRow.addView(send, new LinearLayout.LayoutParams(dp(54), dp(54)));
         box.addView(inputRow);
     }
 
@@ -308,6 +334,7 @@ public class MainActivity extends Activity {
         if (chatLogView == null) return;
         if (chatMessages.isEmpty()) {
             chatLogView.setText("尚無聊天紀錄。");
+            scrollChatToBottom();
             return;
         }
         StringBuilder sb = new StringBuilder();
@@ -322,6 +349,14 @@ public class MainActivity extends Activity {
         } else {
             chatLogView.setText(text);
         }
+        scrollChatToBottom();
+    }
+
+    private void scrollChatToBottom() {
+        if (chatScrollView == null) return;
+        chatScrollView.postDelayed(() -> {
+            try { chatScrollView.fullScroll(View.FOCUS_DOWN); } catch (Exception ignored) {}
+        }, 80);
     }
 
     private void showSettingsPage() {
@@ -1239,7 +1274,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v1.5.3\n");
+        sb.append("- App 版本：v1.5.4\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");

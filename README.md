@@ -408,3 +408,11 @@ method cleanModelThoughts(String)
 - 本機 Gemma 4 E2B / E4B LiteRT-LM
 - Markdown 顯示
 - Google API / NVIDIA NIM / Kaggle / Oracle SSH 維修
+
+
+## v1.5.4 聊天捲動與導航列修正
+
+- 聊天頁不再使用外層 `ScrollView` 包住整頁，避免聊天紀錄區被父層攔截觸控。
+- 聊天紀錄區改成獨立 `ScrollView`，可上下滑動。
+- 每次送出或收到新回覆後，聊天紀錄會自動捲到底。
+- 上方導航列改為橫向滑動列，所有按鈕固定寬高，避免「大小不一」與擠壓變形。
