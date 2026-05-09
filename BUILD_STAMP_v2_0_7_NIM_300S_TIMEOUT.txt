@@ -1,0 +1,1 @@
+OracleAIRescue v2.0.7：直接修正 App / Oracle Rescue Agent LLM timeout。NVIDIA NIM 與大型模型每次 API 回覆等待上限 300 秒；主模型仍不備援，31B 驗證仍可備援。

@@ -815,7 +815,7 @@ NVIDIA NIM Gemma 4 31B
 - Oracle 端 `oracle_rescue_agent.py`
 
 
-## v2.0.4 完整權限修正版 Oracle Rescue Agent
+## v2.0.5 完整權限修正版 Oracle Rescue Agent
 
 - 修正 GitHub Actions Release APK 可能因 LlmClient 重複宣告而打包失敗。
 - 手機端舊 SSH 橋接工具與雲端 Agent 完整權限規則一致化：ssh_exec / shell_exec 不再只讀限制。
@@ -853,3 +853,25 @@ NVIDIA NIM Gemma 4 31B
 - 主模型不備援
 - 主模型失敗即報錯
 - 後段驗證仍保留 Google 31B → NVIDIA NIM 31B 備援
+
+
+## v2.0.6 自主規劃與無幻覺編程維護版
+
+本版強化 Oracle Rescue Agent 的編程維護規範：
+
+- 新增 `discover_projects`：不只依照使用者輸入字面搜尋，會掃描目前 Oracle 主機上的 Git / Python / Node / Android / Hermes / OpenClaw / runtime / config / systemd / crontab / process / Docker 候選。
+- 新增 `resolve_project_identity`：對候選專案讀取 README、config、git remote、近期檔案與專案標記，讓 LLM 判斷目前最新且正確的專案。
+- 新增 `maintenance_plan`：要求模型在高風險或程式維護任務前先建立任務目標、備份、測試、成功標準與回滾規劃。
+- 新增最終回答 31B 一致性檢查：若工具結果與模型結論矛盾，例如工具找到候選卻回答「沒找到」，會阻擋輸出。
+- 保留主模型不備援：一般診斷、工具規劃、讀檔分析、產生修正版仍只使用目前選定主模型；主模型失敗直接報錯。
+- 保留 31B 後段驗證備援：Google Gemma 4 31B 失敗後才使用 NVIDIA NIM `google/gemma-4-31b-it`。
+- 保留完整權限與 `sudo -n`：需要 root 權限時不要求密碼，`sudo -n` 失敗就回報權限錯誤。
+
+
+## v2.0.7 NVIDIA NIM 300 秒模型等待修正版
+
+- 將 App 直接呼叫 LLM 的 read/write timeout 調整為 300 秒，call timeout 調整為 360 秒，避免公共平台大模型回覆較慢時被過早中斷。
+- 將 Oracle Rescue Agent 的主模型工具判斷、修復生成、31B 後段驗證 timeout 統一為 300 秒。
+- 保留主模型不備援：主模型超過 300 秒或 API 失敗仍直接報錯。
+- 保留 31B 後段驗證備援：Google Gemma 4 31B 失敗後可改用 NVIDIA NIM Gemma 4 31B。
+- 保留 v2.0.6 自主規劃、Project Discovery、工具一致性檢查與完整權限。

@@ -96,7 +96,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v2.0.4｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v2.0.8｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -139,7 +139,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v2.0.4");
+        title.setText("甲骨文雲端AI  v2.0.8");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -428,10 +428,16 @@ public class MainActivity extends Activity {
 
     private org.json.JSONObject buildRescueAgentRequest(String userText) throws Exception {
         org.json.JSONObject root = new org.json.JSONObject();
-        root.put("version", "2.0.4");
+        root.put("version", "2.0.8");
         root.put("question", userText);
         root.put("system_prompt", runtimeConfig == null ? "" : runtimeConfig.systemPrompt);
-        root.put("max_steps", 10);
+        root.put("max_steps", 12);
+        root.put("tool_model_timeout_seconds", 300);
+        root.put("repair_model_timeout_seconds", 300);
+        root.put("verifier_timeout_seconds", 300);
+        // v2.0.8 規則：
+        // NVIDIA NIM 是公共平台；主模型與 31B 驗證模型每次 API 回覆等待最多 300 秒。
+        // 超過 300 秒才視為 timeout；主模型 timeout 仍直接報錯，不使用備援。
         // v2.0.2 規則：
         // 主模型不使用備援。一般檢修、工具判斷、讀檔分析、產生修正版都只用目前選定模型。
         // 若主模型 timeout / API 失敗 / 空白，直接報錯，方便定位真正錯誤。
@@ -470,15 +476,19 @@ public class MainActivity extends Activity {
         StringBuilder observations = new StringBuilder();
         List<ChatMessage> msgs = new ArrayList<>();
         msgs.add(new ChatMessage("system",
-            runtimeConfig.systemPrompt + "\n\n"
+            runtimeConfig.systemPrompt + "\n\n" + RepairPrompts.ORACLE_PROGRAMMING_CONSTITUTION + "\n\n"
             + "你是 Oracle Cloud 維修大腦。App 只是 SSH 工具橋接器，不會替你主動搜尋或判斷。"
             + "你必須自己決定第一個要執行的 SSH 工具。還沒有使用工具前，不要聲稱已查看主機。"
             + "每次只呼叫一個最小工具；工具結果回來後再判斷下一步。"
+            + "涉及專案/檔案/服務查找、維修、移除、重啟或 log 檢查時，第一步優先使用 discover_projects 或 maintenance_plan，不可只照字面搜尋。"
             + "如果要修程式，先用工具定位專案、讀取檔案，再用 repair_file 工具啟動安全修復流水線。"
             + "repair_file 會由 App 自動備份、寫回、測試、Gemma 4 31B 驗證；驗證失敗會回滾。"
             + "需要 root 權限時使用 sudo -n；sudo -n 失敗就回報權限錯誤，不要要求使用者輸入 sudo 密碼。"
             + "禁止要求整包 logs；只查單一 service/container/file。"
             + "\n\n工具呼叫請優先輸出 JSON，且不要包在 Markdown code fence：\n"
+            + "{\"tool\":\"maintenance_plan\",\"args\":{\"question\":\"任務目標\"}}\n"
+            + "{\"tool\":\"discover_projects\",\"args\":{\"query\":\"使用者輸入的專案/任務關鍵字\"}}\n"
+            + "{\"tool\":\"resolve_project_identity\",\"args\":{\"query\":\"使用者輸入\",\"path\":\"/home/ubuntu/project\"}}\n"
             + "{\"tool\":\"ssh_exec\",\"args\":{\"command\":\"pwd && ls -la /home/ubuntu\"}}\n"
             + "{\"tool\":\"shell_exec\",\"args\":{\"command\":\"sudo -n systemctl stop example.service || true\"}}\n"
             + "{\"tool\":\"remove_project\",\"args\":{\"target\":\"openclaw\",\"paths\":[\"/home/ubuntu/openclaw\"]}}\n"
@@ -487,6 +497,9 @@ public class MainActivity extends Activity {
             + "{\"tool\":\"final\",\"answer\":\"你的最終回答\"}\n\n"
             + "也支援舊格式：\nTOOL: ssh_exec\nARGS: command=...\n\n"
             + "可用工具：\n"
+            + "maintenance_plan：建立維修前規劃，包含目標、候選專案、備份、測試、成功標準與回滾。\n"
+            + "discover_projects：自主搜尋目前 Oracle 主機上的最新候選專案、服務、進程、crontab、Docker。\n"
+            + "resolve_project_identity：讀取候選專案 README/config/git/recent files，確認是否為正確目標。\n"
             + "ssh_exec / shell_exec：完整權限執行任意 shell 指令，可含 rm/rm -rf、sudo -n、pkill、killall、systemctl stop/disable、docker rm、crontab 清理。\n"
             + "remove_project：完整移除/隔離專案，會嘗試備份、停止服務、殺進程、清 crontab、搬移到 quarantine。\n"
             + "list_projects：快速列專案候選摘要。\n"
@@ -502,7 +515,7 @@ public class MainActivity extends Activity {
         msgs.add(new ChatMessage("user", "使用者問題：" + userText + "\n\n請你決定第一個最小 SSH 工具。還沒有查主機前，不要直接回答。"));
 
         String lastModelText = "";
-        for (int step = 1; step <= 8; step++) {
+        for (int step = 1; step <= 12; step++) {
             String modelText;
             try {
                 ui.post(() -> setStatus("Oracle SSH 橋接：LLM 正在決定工具…"));
@@ -535,6 +548,11 @@ public class MainActivity extends Activity {
             if ("final".equals(call.tool)) {
                 String ans = call.arg("answer");
                 if (ans.isEmpty()) ans = stripToolHeader(lastModelText);
+                if (looksLikeMaintenanceTask(userText) && observations.length() == 0) {
+                    msgs.add(new ChatMessage("assistant", lastModelText));
+                    msgs.add(new ChatMessage("user", "你的 final 被程式化無幻覺規則阻擋：這是程式/雲端維護任務，但尚未使用任何工具查證真實環境。請先使用 maintenance_plan、discover_projects、ssh_exec 或 read_file，不要直接 final。"));
+                    continue;
+                }
                 return ans.trim().isEmpty() ? "Oracle SSH 橋接完成，但 final 內容是空白。" : ans.trim();
             }
 
@@ -552,6 +570,13 @@ public class MainActivity extends Activity {
 
         return "Oracle SSH 橋接已達 8 步工具上限。以下是已取得的工具結果：\n\n```text\n"
             + compactForModel(observations.toString(), 18000) + "\n```\n\n最後一次模型輸出：\n" + lastModelText;
+    }
+
+    private boolean looksLikeMaintenanceTask(String text) {
+        String q = text == null ? "" : text.toLowerCase(Locale.ROOT);
+        String[] keys = new String[] {"專案", "檔案", "程式", "服務", "流程", "進程", "容器", "docker", "systemd", "crontab", "log", "日誌", "維修", "修正", "修復", "修改", "刪除", "移除", "重啟", "停止", "部署", "檢查", "查找", "存在", "目錄", "路徑", "錯誤", "bug", "github", "agent", "hermes", "openclaw", "海參", "海参", "潤天蟹", "润天蟹"};
+        for (String k : keys) if (q.contains(k.toLowerCase(Locale.ROOT))) return true;
+        return false;
     }
 
     private OracleToolCall parseOracleToolCall(String text) {
@@ -626,6 +651,30 @@ public class MainActivity extends Activity {
         String command;
         int timeout = 90000;
         switch (call.tool) {
+            case "maintenance_plan": {
+                String q = call.arg("question");
+                if (q.trim().isEmpty()) q = "根據使用者任務建立維修計畫";
+                return "【維修前規劃】\n"
+                    + "目標：" + q + "\n"
+                    + "流程：1. discover_projects 找目前最新候選專案；2. resolve_project_identity 確認身份；3. 讀取相關檔案/log；4. 備份或 quarantine；5. 使用 repair_file 或完整 shell 執行；6. 自動測試；7. 31B 驗證；8. 失敗回滾。";
+            }
+            case "discover_projects": {
+                String q = safeToolArg(call.arg("query"));
+                command = buildDiscoverProjectsCommand(q);
+                timeout = 300000;
+                break;
+            }
+            case "resolve_project_identity": {
+                String q = safeToolArg(call.arg("query"));
+                String pth = safeToolPath(call.arg("path"));
+                if (pth.isEmpty()) {
+                    Matcher pm = Pattern.compile("/[^,\\s\\\"']+").matcher(call.raw == null ? "" : call.raw);
+                    if (pm.find()) pth = safeToolPath(pm.group());
+                }
+                command = buildResolveProjectIdentityCommand(q, pth);
+                timeout = 300000;
+                break;
+            }
             case "ssh_exec":
             case "shell_exec":
             case "run_safe": {
@@ -755,6 +804,57 @@ public class MainActivity extends Activity {
         return p;
     }
 
+    private String buildDiscoverProjectsCommand(String query) {
+        String q = query == null ? "" : query;
+        StringBuilder sh = new StringBuilder();
+        sh.append("set +e\n");
+        sh.append("QUERY=").append(DiagnosticCommands.shellQuote(q)).append("\n");
+        sh.append("echo '==== DISCOVER_PROJECTS v2.0.8 ===='\n");
+        sh.append("echo \"query=$QUERY\"\n");
+        sh.append("echo '==== candidate project dirs ===='\n");
+        sh.append("for ROOT in /home/ubuntu /home/ubuntu/ai-agents /home/ubuntu/.config /home/ubuntu/_runtime /home/ubuntu/projects /home/ubuntu/apps /opt /srv /var/www /usr/local; do\n");
+        sh.append("  [ -d \"$ROOT\" ] || continue\n");
+        sh.append("  find \"$ROOT\" -maxdepth 4 -type d \\\\( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ \\\\) -prune -o -type f \\\\( -name README.md -o -name readme.md -o -name package.json -o -name pyproject.toml -o -name requirements.txt -o -name build.gradle -o -name build.gradle.kts -o -name settings.gradle -o -name settings.gradle.kts -o -name AndroidManifest.xml -o -name docker-compose.yml -o -name compose.yml -o -name Dockerfile -o -name AGENTS.md -o -name AI_ARCHITECTURE.md -o -name config.yaml -o -name config.yml \\\\) -printf '%TY-%Tm-%Td %TH:%TM %h\\n' 2>/dev/null\n");
+        sh.append("done | sort -r | head -n 300\n");
+        sh.append("echo '==== name match dirs ===='\n");
+        sh.append("TERMS=\"$QUERY\"\n");
+        sh.append("case \"$QUERY\" in *海參*|*海参*) TERMS=\"$TERMS haishen hermes-haishen haishen-hermes\";; esac\n");
+        sh.append("case \"$QUERY\" in *潤天蟹*|*润天蟹*) TERMS=\"$TERMS runtianxie hermes-runtianxie runtianxie-hermes\";; esac\n");
+        sh.append("for T in $TERMS; do [ -n \"$T\" ] && find /home /opt /srv /var/www /etc/systemd/system -maxdepth 7 \\\\( -iname \"*$T*\" -o -path \"*$T*\" \\\\) 2>/dev/null | head -n 80; done | sort -u\n");
+        sh.append("echo '==== runtime evidence: process ===='\n");
+        sh.append("PAT=$(printf '%s|' $TERMS | sed 's/|$//') ; [ -z \"$PAT\" ] && PAT='ai|llm|agent|hermes|openclaw|rescue'\n");
+        sh.append("ps aux | grep -Ei \"$PAT\" | grep -v grep | head -n 80 || true\n");
+        sh.append("echo '==== runtime evidence: services ===='\n");
+        sh.append("systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -Ei \"$PAT\" | head -n 80 || true\n");
+        sh.append("echo '==== runtime evidence: crontab ===='\n");
+        sh.append("crontab -l 2>/dev/null | grep -Ei \"$PAT\" | head -n 80 || true\n");
+        sh.append("echo '==== runtime evidence: docker ===='\n");
+        sh.append("docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}' 2>/dev/null | grep -Ei \"$PAT\" | head -n 80 || true\n");
+        return sh.toString();
+    }
+
+    private String buildResolveProjectIdentityCommand(String query, String path) {
+        String q = query == null ? "" : query;
+        String p = path == null ? "" : path;
+        StringBuilder sh = new StringBuilder();
+        sh.append("set +e\n");
+        sh.append("QUERY=").append(DiagnosticCommands.shellQuote(q)).append("\n");
+        if (p.trim().isEmpty()) {
+            sh.append(buildDiscoverProjectsCommand(q));
+            sh.append("\necho 'resolve_project_identity: 未提供單一路徑，以上為候選；請選擇候選路徑後再讀 README/config/git。'\n");
+            return sh.toString();
+        }
+        sh.append("P=").append(DiagnosticCommands.shellQuote(p)).append("\n");
+        sh.append("echo '==== RESOLVE_PROJECT_IDENTITY v2.0.8 ===='\n");
+        sh.append("echo \"query=$QUERY\"; echo \"path=$P\"\n");
+        sh.append("echo '==== metadata ===='; ls -la \"$P\" 2>/dev/null | head -n 120 || true\n");
+        sh.append("echo '==== git remote ===='; (cd \"$P\" 2>/dev/null && git remote -v 2>/dev/null && git status --short 2>/dev/null | head -n 80) || true\n");
+        sh.append("echo '==== identity files ===='\n");
+        sh.append("for F in README.md readme.md AGENTS.md AI_ARCHITECTURE.md package.json pyproject.toml requirements.txt build.gradle build.gradle.kts settings.gradle settings.gradle.kts docker-compose.yml compose.yml Dockerfile config.yaml config.yml .env.example; do [ -f \"$P/$F\" ] && echo '---' $F '---' && head -c 4000 \"$P/$F\" && echo; done\n");
+        sh.append("echo '==== recent files ===='; find \"$P\" -type f -printf '%TY-%Tm-%Td %TH:%TM %p\\n' 2>/dev/null | sort -r | head -n 80\n");
+        return sh.toString();
+    }
+
     private String buildRemoveProjectCommand(String target, String pathsRaw) {
         StringBuilder py = new StringBuilder();
         py.append("python3 - <<'PY'\n");
@@ -762,17 +862,19 @@ public class MainActivity extends Activity {
         py.append("from pathlib import Path\n");
         py.append("target = ").append(javaStringLiteral(target == null ? "" : target)).append("\n");
         py.append("paths_raw = ").append(javaStringLiteral(pathsRaw == null ? "" : pathsRaw)).append("\n");
+        py.append("def expand_terms(raw):\n    terms=[]\n    def add(x):\n        x=(x or '').strip()\n        if x and x not in terms: terms.append(x)\n    add(raw)\n    aliases={'海參':['haishen','hermes-haishen','haishen-hermes'],'海参':['haishen','hermes-haishen','haishen-hermes'],'潤天蟹':['runtianxie','hermes-runtianxie','runtianxie-hermes'],'润天蟹':['runtianxie','hermes-runtianxie','runtianxie-hermes']}\n    low=(raw or '').lower()\n    for k,vals in aliases.items():\n        if k in (raw or ''):\n            for v in vals: add(v)\n    if 'haishen' in low:\n        for v in ['海參','海参','hermes-haishen','haishen-hermes']: add(v)\n    if 'runtianxie' in low:\n        for v in ['潤天蟹','润天蟹','hermes-runtianxie','runtianxie-hermes']: add(v)\n    return terms\n");
+        py.append("terms = expand_terms(target)\n");
         py.append("stamp=time.strftime('%Y%m%d_%H%M%S')\n");
         py.append("safe=re.sub(r'[^A-Za-z0-9_.-]+','_', target or 'manual_paths').strip('_') or 'target'\n");
         py.append("base=Path.home()/'.oracle_ai_rescue'; q=base/'quarantine'/f'{safe}_{stamp}'; b=base/'backups'; q.mkdir(parents=True, exist_ok=True); b.mkdir(parents=True, exist_ok=True)\n");
         py.append("def run(c,t=180):\n    print('\\n$ '+c)\n    try:\n        p=subprocess.run(c,shell=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=t)\n        print('exitCode='+str(p.returncode))\n        if p.stdout: print('--- stdout ---\\n'+p.stdout[:12000])\n        if p.stderr: print('--- stderr ---\\n'+p.stderr[:12000])\n        return p.returncode==0\n    except Exception as e:\n        print(type(e).__name__+': '+str(e)); return False\n");
         py.append("paths=[]\n");
         py.append("for x in re.findall(r'/[^,\\]\\\"\\' ]+', paths_raw):\n    if x not in paths: paths.append(x)\n");
-        py.append("if target:\n    cmd='find /home /opt /srv /var/www /etc/systemd/system -maxdepth 7 \\\\( -iname '+shlex.quote('*'+target+'*')+' -o -path '+shlex.quote('*'+target+'*')+' \\\\) 2>/dev/null | head -n 200'\n    p=subprocess.run(cmd,shell=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=120)\n    for line in p.stdout.splitlines():\n        if line.startswith('/') and line not in paths: paths.append(line)\n");
-        py.append("print('==== FULL AUTHORITY REMOVE PROJECT ====')\nprint('target=',target)\nprint('paths=',paths)\n");
-        py.append("if target:\n    for c in ['pkill -f '+shlex.quote(target), 'sudo -n pkill -f '+shlex.quote(target), 'killall '+shlex.quote(target)+' 2>/dev/null', 'sudo -n killall '+shlex.quote(target)+' 2>/dev/null']:\n        run(c,60)\n    units=subprocess.run(\"systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}'\",shell=True,text=True,stdout=subprocess.PIPE).stdout.splitlines()\n    for u in [u.strip() for u in units if target.lower() in u.lower()][:50]:\n        run('sudo -n systemctl stop '+shlex.quote(u),60); run('sudo -n systemctl disable '+shlex.quote(u),60)\n    run('TMP=$(mktemp); crontab -l 2>/dev/null | grep -vi '+shlex.quote(target)+' > $TMP; crontab $TMP; RC=$?; rm -f $TMP; exit $RC',60)\n");
+        py.append("for term in terms:\n    cmd='find /home /opt /srv /var/www /etc/systemd/system -maxdepth 7 \\\\( -iname '+shlex.quote('*'+term+'*')+' -o -path '+shlex.quote('*'+term+'*')+' \\\\) 2>/dev/null | head -n 200'\n    p=subprocess.run(cmd,shell=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=120)\n    for line in p.stdout.splitlines():\n        if line.startswith('/') and line not in paths: paths.append(line)\n");
+        py.append("print('==== FULL AUTHORITY REMOVE PROJECT ====')\nprint('target=',target)\nprint('expanded_terms=',terms)\nprint('paths=',paths)\n");
+        py.append("if terms:\n    for term in terms:\n        for c in ['pkill -f '+shlex.quote(term), 'sudo -n pkill -f '+shlex.quote(term), 'killall '+shlex.quote(term)+' 2>/dev/null', 'sudo -n killall '+shlex.quote(term)+' 2>/dev/null']:\n            run(c,60)\n    units=subprocess.run(\"systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}'\",shell=True,text=True,stdout=subprocess.PIPE).stdout.splitlines()\n    for u in [u.strip() for u in units if any(term.lower() in u.lower() for term in terms)][:50]:\n        run('sudo -n systemctl stop '+shlex.quote(u),60); run('sudo -n systemctl disable '+shlex.quote(u),60)\n    pattern='|'.join(re.escape(t) for t in terms)\n    run('TMP=$(mktemp); crontab -l 2>/dev/null | grep -Evi '+shlex.quote(pattern)+' > $TMP; crontab $TMP; RC=$?; rm -f $TMP; exit $RC',60)\n");
         py.append("for sp in paths:\n    if not sp.startswith('/'): continue\n    name=re.sub(r'[^A-Za-z0-9_.-]+','_',sp.strip('/')) or 'path'\n    bf=b/f'{safe}_{name}_{stamp}.tar.gz'; dest=q/name\n    print('\\n==== PATH '+sp+' ====')\n    backup='tar -czf '+shlex.quote(str(bf))+' -C / '+shlex.quote(sp.lstrip('/'))\n    if not run(backup,300): run('sudo -n '+backup,300)\n    mv='mkdir -p '+shlex.quote(str(q))+' && mv -- '+shlex.quote(sp)+' '+shlex.quote(str(dest))\n    if not run(mv,180): run('sudo -n '+mv,180)\n");
-        py.append("if target:\n    run(\"echo '[process]'; ps aux | grep -i \"+shlex.quote(target)+\" | grep -v grep || true; echo '[paths]'; find /home /opt /srv /var/www /etc/systemd/system -maxdepth 7 -iname \"+shlex.quote('*'+target+'*')+\" 2>/dev/null | head -n 100 || true; echo '[services]'; systemctl list-units --type=service --all 2>/dev/null | grep -i \"+shlex.quote(target)+\" || true; echo '[crontab]'; crontab -l 2>/dev/null | grep -i \"+shlex.quote(target)+\" || true\",120)\n");
+        py.append("if terms:\n    pattern='|'.join(re.escape(t) for t in terms)\n    tests=' '.join('-iname '+shlex.quote('*'+t+'*')+' -o' for t in terms)[:-3]\n    run(\"echo '[process]'; ps aux | grep -Ei \"+shlex.quote(pattern)+\" | grep -v grep || true; echo '[paths]'; find /home /opt /srv /var/www /etc/systemd/system -maxdepth 7 \\\\( \"+tests+\" \\\\) 2>/dev/null | head -n 100 || true; echo '[services]'; systemctl list-units --type=service --all 2>/dev/null | grep -Ei \"+shlex.quote(pattern)+\" || true; echo '[crontab]'; crontab -l 2>/dev/null | grep -Ei \"+shlex.quote(pattern)+\" || true\",120)\n");
         py.append("print('quarantine=', q)\nprint('backups=', b)\n");
         py.append("PY");
         return py.toString();
@@ -2401,7 +2503,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v2.0.4\n");
+        sb.append("- App 版本：v2.0.6\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");

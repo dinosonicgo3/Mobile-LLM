@@ -1,0 +1,1 @@
+OracleAIRescue v2.0.5：主模型不備援；延長主模型逾時；remove_project 支援中文名/英文 slug 別名；維持完整權限與 sudo -n。

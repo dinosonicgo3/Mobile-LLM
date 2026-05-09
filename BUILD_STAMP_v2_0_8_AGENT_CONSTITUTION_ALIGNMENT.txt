@@ -1,0 +1,4 @@
+OracleAIRescue v2.0.8：編程 Agent 規範對齊版
+- Align mobile default prompt, bridge prompt, Oracle Rescue Agent system prompt.
+- Add deterministic final_static_guard before 31B final verification.
+- Add bridge discover_projects / resolve_project_identity / maintenance_plan tools.

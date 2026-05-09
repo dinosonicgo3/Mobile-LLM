@@ -1,0 +1,1 @@
+OracleAIRescue v2.0.6：新增自主 Project Discovery、身份確認、維護規劃、最終 31B 工具一致性檢查；保留主模型不備援、完整權限與 sudo -n。

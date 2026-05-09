@@ -15,9 +15,12 @@ import java.util.concurrent.TimeUnit;
 
 class LlmClient {
     private final OkHttpClient client = new OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(180, TimeUnit.SECONDS)
-        .writeTimeout(90, TimeUnit.SECONDS)
+        .connectTimeout(60, TimeUnit.SECONDS)
+        // NVIDIA NIM 是公共平台；大型模型回覆可能較慢。模型回覆等待上限固定為 5 分鐘。
+        .readTimeout(300, TimeUnit.SECONDS)
+        .writeTimeout(300, TimeUnit.SECONDS)
+        // 保留額外連線與傳輸緩衝，避免剛好 300 秒邊界被整體呼叫提前中斷。
+        .callTimeout(360, TimeUnit.SECONDS)
         .build();
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
 
