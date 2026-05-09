@@ -416,3 +416,21 @@ method cleanModelThoughts(String)
 - 聊天紀錄區改成獨立 `ScrollView`，可上下滑動。
 - 每次送出或收到新回覆後，聊天紀錄會自動捲到底。
 - 上方導航列改為橫向滑動列，所有按鈕固定寬高，避免「大小不一」與擠壓變形。
+
+
+## v1.5.5 LOG 回報下載修正
+
+- LOG 回報選單新增：
+  - 儲存 Markdown 到下載資料夾（推薦）
+  - 儲存 TXT 到下載資料夾
+- Android 10 以上會儲存到：
+
+```text
+Download/OracleCloudAI/
+```
+
+- 分享功能保留為備用，但標示為「可能開新話題」。
+- 建議流程改為：
+  1. App → 齒輪 → LOG 回報 → 儲存 Markdown 到下載資料夾
+  2. 回到原本 ChatGPT 對話
+  3. 用附件上傳該 `.md` 或 `.txt` 檔案

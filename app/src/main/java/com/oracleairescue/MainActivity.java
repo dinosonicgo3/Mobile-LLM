@@ -2,6 +2,7 @@ package com.oracleairescue;
 
 import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Typeface;
@@ -10,10 +11,14 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.text.InputType;
 import android.text.method.ScrollingMovementMethod;
 import android.view.Gravity;
@@ -85,7 +90,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v1.5.4｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v1.5.5｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -128,7 +133,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.5.4");
+        title.setText("甲骨文雲端AI  v1.5.5");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -1221,18 +1226,71 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this)
             .setTitle("LOG 回報")
             .setItems(new String[] {
-                "匯出 Markdown 報告（推薦）",
-                "匯出 TXT 報告",
+                "儲存 Markdown 到下載資料夾（推薦）",
+                "儲存 TXT 到下載資料夾",
+                "分享 Markdown 報告（備用，可能開新話題）",
+                "分享 TXT 報告（備用，可能開新話題）",
                 "查看報告內容",
                 "清空本機 LOG"
             }, (d, which) -> {
-                if (which == 0) shareSupportReport("md");
-                else if (which == 1) shareSupportReport("txt");
-                else if (which == 2) showTextDialog("LOG 回報內容", buildSupportReportMarkdown());
+                if (which == 0) saveSupportReportToDownloads("md");
+                else if (which == 1) saveSupportReportToDownloads("txt");
+                else if (which == 2) shareSupportReport("md");
+                else if (which == 3) shareSupportReport("txt");
+                else if (which == 4) showTextDialog("LOG 回報內容", buildSupportReportMarkdown());
                 else confirm("確定清空本機 LOG？\n\n這不會清空聊天，也不會刪除 API KEY 或 SSH 設定。", () -> { store.clearAppLogs(); appLog("LOG 已清空後重新開始記錄"); toast("已清空本機 LOG"); });
             })
             .setNegativeButton("取消", null)
             .show();
+    }
+
+    private void saveSupportReportToDownloads(String ext) {
+        try {
+            String report = "txt".equals(ext) ? buildSupportReportText() : buildSupportReportMarkdown();
+            report = maskSensitive(report);
+            String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.TAIWAN).format(new Date());
+            String fileName = "OracleCloudAI_report_" + stamp + "." + ext;
+            String mime = "md".equals(ext) ? "text/markdown" : "text/plain";
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/OracleCloudAI");
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+
+                Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) throw new IllegalStateException("無法建立下載檔案 URI");
+
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    if (out == null) throw new IllegalStateException("無法開啟下載檔案輸出串流");
+                    out.write(report.getBytes(StandardCharsets.UTF_8));
+                    out.flush();
+                }
+
+                values.clear();
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                getContentResolver().update(uri, values, null, null);
+
+                appLog("REPORT 儲存到下載資料夾｜Download/OracleCloudAI/" + fileName);
+                showTextDialog("已儲存 LOG 回報", "已儲存到手機下載資料夾：\n\nDownload/OracleCloudAI/" + fileName + "\n\n請回到原本這個 ChatGPT 對話，用附件上傳這個 .md / .txt 檔案給我。\n\n不要用分享功能，分享可能會開成新話題。");
+            } else {
+                File base = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                if (base == null) base = new File(getFilesDir(), "reports");
+                File dir = new File(base, "OracleCloudAI");
+                if (!dir.exists()) dir.mkdirs();
+                File file = new File(dir, fileName);
+                try (FileOutputStream out = new FileOutputStream(file)) {
+                    out.write(report.getBytes(StandardCharsets.UTF_8));
+                    out.flush();
+                }
+                appLog("REPORT 儲存到 App 本機資料夾｜" + file.getAbsolutePath());
+                showTextDialog("已儲存 LOG 回報", "已儲存到 App 本機資料夾：\n\n" + file.getAbsolutePath() + "\n\n如果檔案管理器看不到，請使用『查看報告內容』複製文字，或改用分享備用功能。");
+            }
+        } catch (Exception e) {
+            appLog("REPORT 儲存失敗｜" + e.getClass().getSimpleName() + "：" + e.getMessage());
+            showTextDialog("儲存失敗", e.getClass().getSimpleName() + "：" + e.getMessage() + "\n\n你仍可選擇『查看報告內容』後複製文字，或使用分享備用功能。");
+        }
     }
 
     private void shareSupportReport(String ext) {
@@ -1254,8 +1312,8 @@ public class MainActivity extends Activity {
             send.putExtra(Intent.EXTRA_TEXT, "這是甲骨文雲端AI自動產生的問題回報。已自動遮蔽常見 Token / Key。");
             send.putExtra(Intent.EXTRA_STREAM, uri);
             send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            appLog("REPORT 匯出｜" + file.getName());
-            startActivity(Intent.createChooser(send, "分享 LOG 回報"));
+            appLog("REPORT 分享備用｜" + file.getName());
+            startActivity(Intent.createChooser(send, "分享 LOG 回報（備用）"));
         } catch (Exception e) {
             appLog("REPORT 匯出失敗｜" + e.getClass().getSimpleName() + "：" + e.getMessage());
             showTextDialog("匯出失敗", e.getClass().getSimpleName() + "：" + e.getMessage() + "\n\n你仍可選擇『查看報告內容』後複製文字貼給我。");
@@ -1274,7 +1332,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v1.5.4\n");
+        sb.append("- App 版本：v1.5.5\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");
