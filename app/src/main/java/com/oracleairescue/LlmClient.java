@@ -24,7 +24,7 @@ class LlmClient {
     String sendChat(ModelSettings settings, List<ChatMessage> messages) throws Exception {
         if (settings.baseUrl.trim().isEmpty()) throw new IllegalArgumentException("請先輸入 Base URL。");
         if (settings.modelName.trim().isEmpty()) throw new IllegalArgumentException("請先選擇或輸入模型名稱。");
-        if (!"kaggle".equals(settings.provider) && settings.apiKey.trim().isEmpty()) throw new IllegalArgumentException("請先輸入 API Key。");
+        if (!"kaggle".equals(settings.provider) && !"local_gemma".equals(settings.provider) && settings.apiKey.trim().isEmpty()) throw new IllegalArgumentException("請先輸入 API Key。");
 
         JSONArray arr = new JSONArray();
         for (ChatMessage m : messages) arr.put(new JSONObject().put("role", m.role).put("content", m.content));
@@ -34,6 +34,26 @@ class LlmClient {
             .put("temperature", settings.temperature)
             .put("max_tokens", 4096);
 
+        // Google Gemini / Gemma over Gemini OpenAI-compatible API:
+        // 使用官方 reasoning_effort 參數啟用 thinking，但不請求 thought summaries。
+        if ("gemini".equals(settings.provider)) {
+            String effort = settings.geminiReasoningEffort == null ? "high" : settings.geminiReasoningEffort.trim();
+            if (effort.length() > 0 && !"default".equalsIgnoreCase(effort)) payload.put("reasoning_effort", effort);
+        }
+
+        try {
+            return executeChatRequest(settings, payload);
+        } catch (RuntimeException e) {
+            // 某些 Google 模型或代理端點若尚未支援 reasoning_effort，避免整體聊天故障，退回不帶 thinking 參數重試。
+            if ("gemini".equals(settings.provider) && payload.has("reasoning_effort") && e.getMessage() != null && e.getMessage().contains("HTTP 400")) {
+                payload.remove("reasoning_effort");
+                return executeChatRequest(settings, payload);
+            }
+            throw e;
+        }
+    }
+
+    private String executeChatRequest(ModelSettings settings, JSONObject payload) throws Exception {
         Request.Builder b = new Request.Builder()
             .url(trim(settings.baseUrl) + "/chat/completions")
             .addHeader("Content-Type", "application/json")
@@ -268,9 +288,21 @@ class LlmClient {
         if (choices == null || choices.length() == 0) throw new RuntimeException("API 回應沒有 choices：" + body);
         JSONObject first = choices.getJSONObject(0);
         JSONObject msg = first.optJSONObject("message");
-        if (msg != null && msg.optString("content").trim().length() > 0) return msg.optString("content");
-        if (first.optString("text").trim().length() > 0) return first.optString("text");
-        return body;
+        if (msg != null && msg.optString("content").trim().length() > 0) return stripThinkingText(msg.optString("content"));
+        if (first.optString("text").trim().length() > 0) return stripThinkingText(first.optString("text"));
+        return stripThinkingText(body);
+    }
+
+    private static String stripThinkingText(String raw) {
+        if (raw == null) return "";
+        String s = raw;
+        // 隱藏常見模型直接吐出的思考區塊，避免顯示到聊天欄。
+        s = s.replaceAll("(?is)<think>.*?</think>", "");
+        s = s.replaceAll("(?is)<thinking>.*?</thinking>", "");
+        s = s.replaceAll("(?is)<thought>.*?</thought>", "");
+        s = s.replaceAll("(?is)```\\s*(thinking|thought|thoughts|reasoning|思考)[^\\n]*\\n.*?```", "");
+        s = s.replaceAll("(?is)^\\s*(思考過程|思考|推理過程|reasoning|thinking)\\s*[:：]\\s*\\n+.*?\\n+(答案|回覆|final|answer)\\s*[:：]\\s*", "");
+        return s.trim();
     }
 
     private static List<ModelOption> distinct(List<ModelOption> src) {

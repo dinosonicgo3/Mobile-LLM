@@ -360,3 +360,34 @@ android.enableJetifier=true
 - 移除大型「送出訊息」按鈕。
 - `LOG 回報`、`查看 LOG`、`清空聊天`、`清空本機 LOG` 移入聊天頁右上角齒輪 `⚙`。
 - 降低誤觸清空聊天的機率，也讓聊天區更乾淨。
+
+
+## v1.4.8 聊天頁空白修正
+
+- 因 `LOG 回報` 與 `清空聊天` 已移入右上角齒輪，原本底部工具列空間不再保留。
+- 聊天紀錄顯示區由 360dp 加高到 470dp。
+- 輸入列高度縮小，送出按鈕改為更緊湊的小圖示。
+- 修正移除底部工具列後仍看起來留有大片空白的問題。
+
+
+## v1.4.9 Gemini 思考與 Markdown 顯示
+
+- Google Gemini / Gemma over Gemini API 預設使用 `reasoning_effort=high` 啟用思考。
+- App 不請求 thought summaries，並會過濾常見 `<think>...</think>` / thinking code fence，避免思考內容顯示到聊天欄。
+- 聊天欄加入 Markdown 顯示支援，可閱讀標題、列表、粗體、程式碼區塊。
+- 設定頁可調整 Gemini 思考等級：high / medium / low / none。
+
+
+## v1.5.2 手機本機 Gemma 4 E2B/E4B
+
+此版調整 Gemma 4 方向：
+
+- Google API / NVIDIA NIM：仍然是直連 Key 使用。
+- Kaggle：仍然用 Kaggle Qwen。
+- Oracle：保留 SSH 維修，不再用來下載/部署 Gemma 4 模型。
+- 新增 `本機` 頁：手機本地 Gemma 4 E2B / E4B 一鍵下載。
+- 新增 `本機 Gemma 4` 平台：聊天時不走 API、不走 Oracle，在手機上用 LiteRT-LM 推論。
+- E2B / E4B 使用 `litert-community/*-litert-lm` 的 `.litertlm` 模型。
+- 啟用 LiteRT-LM speculative decoding / MTP。
+
+注意：E2B 約 2.6GB，E4B 約 3.7GB；手機需要足夠儲存空間與 RAM。第一次本機推論會花時間載入模型。

@@ -1,5 +1,5 @@
 {
-  "version": "v1.4.7-chat-ui-gear-tools",
+  "version": "v1.5.2-local-gemma-litertlm",
   "systemPrompt": "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。你可以進行一般聊天、程式修正、LLM API 設定、Kaggle/NVIDIA NIM/Google API 診斷，以及 Oracle Cloud 維修。你必須保持上下文，不得只根據最後一句話回答。",
   "extraDiagnosticCommands": [
     "date",
@@ -34,11 +34,29 @@
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "聊天頁改為輸入框右側小型送出圖示；LOG 回報/清空聊天移入上方齒輪工具選單。",
+    "fix": "移除 Oracle Gemma 4 遠端下載方向，新增手機本地 Gemma 4 E2B/E4B LiteRT-LM 下載與本機推論入口。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {
     "privateRepoSupported": true,
     "message": "更新頁與 Releases 查詢會使用 App 內儲存的 GitHub Token 讀取私人倉庫。不要把 token 寫入 repo。"
+  },
+  "localGemma": {
+    "enabled": true,
+    "models": [
+      {
+        "label": "E2B",
+        "repo": "litert-community/gemma-4-E2B-it-litert-lm",
+        "file": "gemma-4-E2B-it.litertlm",
+        "approxSizeGb": 2.6
+      },
+      {
+        "label": "E4B",
+        "repo": "litert-community/gemma-4-E4B-it-litert-lm",
+        "file": "gemma-4-E4B-it.litertlm",
+        "approxSizeGb": 3.7
+      }
+    ],
+    "note": "本機模型使用 LiteRT-LM；E2B/E4B 手機本地運行，不走 Google/NVIDIA/Oracle。"
   }
 }

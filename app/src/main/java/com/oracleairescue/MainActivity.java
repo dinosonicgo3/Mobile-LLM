@@ -1,6 +1,8 @@
 package com.oracleairescue;
 
 import android.app.AlertDialog;
+import android.app.DownloadManager;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Typeface;
 import android.net.Uri;
@@ -30,6 +32,7 @@ import android.widget.Toast;
 
 import android.app.Activity;
 import androidx.core.content.FileProvider;
+import io.noties.markwon.Markwon;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -59,18 +62,20 @@ public class MainActivity extends Activity {
 
     private Spinner chatModelSpinner;
     private TextView chatLogView;
+    private Markwon markwon;
     private EditText chatInput;
     private static final int REQUEST_IMPORT_SSH_KEY = 8801;
     private EditText sshPrivateKeyEditor;
     private TextView sshKeyStatusLabel;
 
-    private final String[] providerLabels = new String[] {"Google Gemini", "NVIDIA NIM", "Kaggle Qwen / OpenAI 相容", "自訂 OpenAI 相容"};
-    private final String[] providerCodes = new String[] {"gemini", "nim", "kaggle", "custom"};
+    private final String[] providerLabels = new String[] {"Google Gemini", "NVIDIA NIM", "Kaggle Qwen / OpenAI 相容", "本機 Gemma 4", "自訂 OpenAI 相容"};
+    private final String[] providerCodes = new String[] {"gemini", "nim", "kaggle", "local_gemma", "custom"};
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         store = new SecureStore(this);
+        markwon = Markwon.create(this);
         modelSettings = store.loadModel();
         serverSettings = store.loadServer();
         updateSettings = store.loadUpdateSettings();
@@ -78,7 +83,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v1.4.7｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v1.5.2｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -121,7 +126,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.4.7");
+        title.setText("甲骨文雲端AI  v1.5.2");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -138,6 +143,7 @@ public class MainActivity extends Activity {
         root.addView(nav);
         addNav(nav, "聊天", selected, v -> showChatPage());
         addNav(nav, "設定", selected, v -> showSettingsPage());
+        addNav(nav, "本機", selected, v -> showLocalGemmaPage());
         addNav(nav, "Oracle", selected, v -> showServerPage());
         addNav(nav, "Kaggle", selected, v -> showKagglePage());
         addNav(nav, "維修", selected, v -> showRepairPage());
@@ -185,32 +191,34 @@ public class MainActivity extends Activity {
         chatModelSpinner = new Spinner(this);
         refreshChatModelSpinner();
         box.addView(chatModelSpinner);
-        box.addView(label("目前平台：" + providerTitle(modelSettings.provider) + "｜Temperature " + modelSettings.temperature + "＝回覆創意程度｜上下文 " + modelSettings.maxContextCharacters + " 字元＝會帶入的最近對話量", 13, false));
+        box.addView(label("目前平台：" + providerTitle(modelSettings.provider) + "｜Temperature " + modelSettings.temperature + "｜上下文 " + modelSettings.maxContextCharacters + " 字元｜Markdown 顯示：已啟用｜Gemini 思考：已啟用且隱藏", 13, false));
 
         chatLogView = label("", 14, false);
         chatLogView.setTextIsSelectable(true);
         chatLogView.setMovementMethod(new ScrollingMovementMethod());
         chatLogView.setBackgroundColor(0xffffffff);
         chatLogView.setPadding(dp(10), dp(10), dp(10), dp(10));
-        box.addView(chatLogView, new LinearLayout.LayoutParams(-1, dp(360)));
+        // v1.4.8：LOG/清空按鈕已移入右上角齒輪，所以聊天顯示區加高，不再留下原本底部按鈕空白。
+        box.addView(chatLogView, new LinearLayout.LayoutParams(-1, dp(470)));
         renderChatLog();
 
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
         inputRow.setGravity(Gravity.CENTER_VERTICAL);
-        inputRow.setPadding(0, dp(4), 0, dp(4));
+        inputRow.setPadding(0, dp(2), 0, 0);
 
         chatInput = edit("輸入訊息，例如：幫我檢查 Oracle AI 助理為什麼故障", true);
-        chatInput.setMinLines(2);
+        chatInput.setMinLines(1);
+        chatInput.setMaxLines(3);
 
         Button send = button("➤");
         send.setTextSize(20);
-        send.setMinWidth(dp(54));
-        send.setMinHeight(dp(50));
+        send.setMinWidth(dp(48));
+        send.setMinHeight(dp(46));
         send.setOnClickListener(v -> sendChat());
 
-        inputRow.addView(chatInput, new LinearLayout.LayoutParams(0, dp(64), 1));
-        inputRow.addView(send, new LinearLayout.LayoutParams(dp(58), dp(64)));
+        inputRow.addView(chatInput, new LinearLayout.LayoutParams(0, dp(52), 1));
+        inputRow.addView(send, new LinearLayout.LayoutParams(dp(52), dp(52)));
         box.addView(inputRow);
     }
 
@@ -244,6 +252,25 @@ public class MainActivity extends Activity {
         chatMessages.add(new ChatMessage("user", text));
         renderChatLog();
         runTask("正在呼叫模型…", () -> {
+            if ("local_gemma".equals(modelSettings.provider)) {
+                String modelPath = localGemmaPathFor(modelSettings.modelName);
+                File modelFile = new File(modelPath);
+                if (!modelFile.exists() || modelFile.length() < 1000000000L) {
+                    throw new IllegalStateException("本機模型尚未下載完成：" + modelSettings.modelName + "\n請到「本機」頁一鍵下載 E2B 或 E4B。");
+                }
+                String localPrompt = buildLocalPrompt(chatMessages, modelSettings.maxContextCharacters);
+                String reply = LocalGemmaRunner.generate(this, modelPath, localPrompt, runtimeConfig.systemPrompt);
+                reply = cleanModelThoughts(reply);
+                String finalReply = reply;
+                ui.post(() -> {
+                    appLog("LOCAL GEMMA 收到回覆｜長度：" + (finalReply == null ? 0 : finalReply.length()));
+                    chatMessages.add(new ChatMessage("assistant", finalReply));
+                    store.saveChat(chatMessages);
+                    renderChatLog();
+                    setStatus("本機 Gemma 回覆完成");
+                });
+                return;
+            }
             if (isKaggleEndpointMissing(modelSettings)) {
                 RuntimeConfig cfg = llm.fetchRuntimeConfig(updateSettings);
                 store.backupRuntimeConfig();
@@ -279,11 +306,22 @@ public class MainActivity extends Activity {
 
     private void renderChatLog() {
         if (chatLogView == null) return;
+        if (chatMessages.isEmpty()) {
+            chatLogView.setText("尚無聊天紀錄。");
+            return;
+        }
         StringBuilder sb = new StringBuilder();
         for (ChatMessage m : chatMessages) {
-            sb.append("user".equals(m.role) ? "你：\n" : "AI：\n").append(m.content).append("\n\n");
+            if ("user".equals(m.role)) sb.append("### 你\n\n");
+            else sb.append("### AI\n\n");
+            sb.append(m.content == null ? "" : m.content.trim()).append("\n\n---\n\n");
         }
-        chatLogView.setText(sb.length() == 0 ? "尚無聊天紀錄。" : sb.toString());
+        String text = sb.toString();
+        if (modelSettings != null && modelSettings.renderMarkdown && markwon != null) {
+            markwon.setMarkdown(chatLogView, text);
+        } else {
+            chatLogView.setText(text);
+        }
     }
 
     private void showSettingsPage() {
@@ -297,13 +335,13 @@ public class MainActivity extends Activity {
         box.addView(providerExplain);
 
         box.addView(label("API Key：只屬於目前選擇的平台；Google/NVIDIA/Kaggle/自訂不會共用。", 13, true));
-        EditText apiKey = edit("API Key，Kaggle 若無驗證可留空", false);
+        EditText apiKey = edit("API Key，本機 Gemma 不需要；Kaggle 若無驗證可留空", false);
         apiKey.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         apiKey.setText(modelSettings.apiKey);
         box.addView(apiKey);
 
         box.addView(label("Base URL：只屬於目前平台。", 13, true));
-        EditText baseUrl = edit("Base URL，例如 https://integrate.api.nvidia.com/v1 或 Kaggle 隧道 /v1", false);
+        EditText baseUrl = edit("Base URL，例如 https://integrate.api.nvidia.com/v1 或 Kaggle 隧道 /v1；本機 Gemma 可留空", false);
         baseUrl.setText(modelSettings.baseUrl);
         box.addView(baseUrl);
 
@@ -323,6 +361,16 @@ public class MainActivity extends Activity {
         context.setText(String.valueOf(modelSettings.maxContextCharacters));
         box.addView(context);
 
+        box.addView(label("Google Gemini / Gemma 思考：預設啟用 high；App 會隱藏思考內容，只顯示最終回答。NVIDIA/Kaggle/自訂平台會忽略此設定。", 13, true));
+        Spinner thinkingSpinner = new Spinner(this);
+        String[] thinkingLabels = new String[] {"high：強思考，適合修程式/診斷", "medium：平衡", "low：較快", "none：關閉，僅部分 Gemini 2.5 支援"};
+        String[] thinkingCodes = new String[] {"high", "medium", "low", "none"};
+        thinkingSpinner.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, thinkingLabels));
+        thinkingSpinner.setSelection(reasoningIndex(modelSettings.geminiReasoningEffort));
+        box.addView(thinkingSpinner);
+
+        box.addView(label("Markdown 顯示：已啟用。AI 回覆的標題、列表、程式碼區塊會用 Markdown 方式顯示。", 13, true));
+
         TextView catalogInfo = label("目前平台：" + providerTitle(modelSettings.provider) + "｜本平台模型清單：" + store.loadCatalog(modelSettings.provider).size() + "｜本平台常用模型：" + store.loadFavorites(modelSettings.provider).size(), 14, false);
         box.addView(catalogInfo);
 
@@ -336,6 +384,7 @@ public class MainActivity extends Activity {
                     apiKey.setText(modelSettings.apiKey);
                     temperature.setText(String.valueOf(modelSettings.temperature));
                     context.setText(String.valueOf(modelSettings.maxContextCharacters));
+                    thinkingSpinner.setSelection(reasoningIndex(modelSettings.geminiReasoningEffort));
                     providerExplain.setText("目前平台：" + providerTitle(code) + "｜各平台的 KEY、Base URL、模型清單、常用模型都分開保存。");
                     catalogInfo.setText("目前平台：" + providerTitle(code) + "｜本平台模型清單：" + store.loadCatalog(code).size() + "｜本平台常用模型：" + store.loadFavorites(code).size());
                 }
@@ -352,6 +401,9 @@ public class MainActivity extends Activity {
             modelSettings.modelName = modelName.getText().toString().trim();
             modelSettings.temperature = parseDouble(temperature.getText().toString(), 0.2);
             modelSettings.maxContextCharacters = Math.max(8000, Math.min(200000, parseInt(context.getText().toString(), 60000)));
+            modelSettings.geminiReasoningEffort = thinkingCodes[thinkingSpinner.getSelectedItemPosition()];
+            modelSettings.hideThoughts = true;
+            modelSettings.renderMarkdown = true;
             store.saveModel(modelSettings);
             toast("已儲存，之後開啟不用重填 KEY。也請不要把 KEY 貼給任何 AI。 ");
         });
@@ -550,6 +602,175 @@ public class MainActivity extends Activity {
             })
             .setNegativeButton("取消", null)
             .show();
+    }
+
+
+    private void showLocalGemmaPage() {
+        LinearLayout box = page("本機");
+        addSection(box, "本機 Gemma 4 E2B / E4B 加速推論");
+        box.addView(label("這裡是手機本地運行，不是 Google API、不是 NVIDIA NIM、不是甲骨文雲端。模型會下載到此 App 的本機資料夾，使用 LiteRT-LM 與 speculative decoding / MTP。E2B 約 2.6GB，E4B 約 3.7GB，請使用 Wi‑Fi 並確認手機空間足夠。", 14, false));
+
+        Button statusBtn = button("檢查本機模型狀態");
+        statusBtn.setOnClickListener(v -> showTextDialog("本機模型狀態", buildLocalGemmaStatus()));
+        box.addView(statusBtn);
+
+        LinearLayout row1 = row();
+        Button e2b = button("一鍵下載 E2B 加速模型");
+        e2b.setOnClickListener(v -> confirm("將下載 Gemma 4 E2B LiteRT-LM 本機模型，約 2.6GB。若之前下載過舊版，建議重新下載以取得 speculative decoding / MTP 支援。", () -> startLocalGemmaDownload("E2B")));
+        Button e4b = button("一鍵下載 E4B 加速模型");
+        e4b.setOnClickListener(v -> confirm("將下載 Gemma 4 E4B LiteRT-LM 本機模型，約 3.7GB。高階手機建議，若手機記憶體不足可能啟動失敗。", () -> startLocalGemmaDownload("E4B")));
+        row1.addView(e2b, weight());
+        row1.addView(e4b, weight());
+        box.addView(row1);
+
+        LinearLayout row2 = row();
+        Button useE2B = button("使用本機 E2B");
+        useE2B.setOnClickListener(v -> applyLocalGemma("gemma-4-E2B-it.litertlm"));
+        Button useE4B = button("使用本機 E4B");
+        useE4B.setOnClickListener(v -> applyLocalGemma("gemma-4-E4B-it.litertlm"));
+        row2.addView(useE2B, weight());
+        row2.addView(useE4B, weight());
+        box.addView(row2);
+
+        Button info = button("本機 Gemma 說明");
+        info.setOnClickListener(v -> showTextDialog("本機 Gemma 說明",
+            "本機 Gemma 4 使用 LiteRT-LM，模型在手機內運行，不需要 API Key。\\n\\n"
+            + "E2B：較適合先測，檔案約 2.6GB。\\n"
+            + "E4B：能力較好，但需要更高 RAM / GPU，檔案約 3.7GB。\\n\\n"
+            + "若你之前在 AI Edge Gallery 下載過模型，通常不能直接共用，因為 Android App 之間資料互相隔離。這個 App 會自己下載一份到本機資料夾。\\n\\n"
+            + "如果聊天時啟動失敗，請匯出 LOG 回報給我。"));
+        box.addView(info);
+    }
+
+    private void startLocalGemmaDownload(String size) {
+        try {
+            LocalModelInfo info = localModelInfo(size);
+            File dir = getExternalFilesDir("models");
+            if (dir == null) throw new IllegalStateException("無法取得 App 本機模型資料夾。");
+            if (!dir.exists()) dir.mkdirs();
+            File target = new File(dir, info.fileName);
+
+            if (target.exists() && target.length() > info.minimumBytes) {
+                showTextDialog("模型已存在", info.title + " 已存在：\\n" + target.getAbsolutePath() + "\\n大小：" + formatBytes(target.length()) + "\\n\\n可以直接按「使用本機 " + size + "」。");
+                return;
+            }
+
+            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(info.url));
+            req.setTitle("甲骨文雲端AI｜下載 " + info.title);
+            req.setDescription("本機 Gemma 4 LiteRT-LM 加速模型下載中");
+            req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            req.setDestinationUri(Uri.fromFile(target));
+            req.setAllowedOverMetered(false);
+            req.setAllowedOverRoaming(false);
+            long id = dm.enqueue(req);
+            appLog("LOCAL GEMMA 下載開始｜" + info.title + "｜downloadId=" + id + "｜" + info.url);
+            showTextDialog("已開始下載", info.title + " 已開始下載。\\n\\n檔案位置：\\n" + target.getAbsolutePath() + "\\n\\n下載很大，請保持 Wi‑Fi。下載完成後回到「本機」頁按「檢查本機模型狀態」，再按「使用本機 " + size + "」。");
+        } catch (Exception e) {
+            showTextDialog("下載失敗", e.getClass().getSimpleName() + "：" + e.getMessage());
+        }
+    }
+
+    private void applyLocalGemma(String fileName) {
+        File file = new File(localGemmaPathFor(fileName));
+        if (!file.exists() || file.length() < 1000000000L) {
+            showTextDialog("模型尚未下載完成", "找不到完整模型：\\n" + file.getAbsolutePath() + "\\n\\n請先按一鍵下載，或確認下載是否完成。");
+            return;
+        }
+        modelSettings = store.loadModelFor("local_gemma");
+        modelSettings.provider = "local_gemma";
+        modelSettings.modelName = fileName;
+        modelSettings.apiKey = "";
+        modelSettings.baseUrl = "";
+        store.saveModel(modelSettings);
+        List<ModelOption> fav = store.loadFavorites("local_gemma");
+        boolean exists = false;
+        for (ModelOption m : fav) if (m.id.equals(fileName)) exists = true;
+        if (!exists) {
+            String display = fileName.contains("E4B") ? "本機 Gemma 4 E4B 加速" : "本機 Gemma 4 E2B 加速";
+            fav.add(new ModelOption(fileName, display, "手機本地 LiteRT-LM 模型"));
+            store.saveFavorites("local_gemma", fav);
+        }
+        refreshChatModelSpinner();
+        showTextDialog("已切換到本機模型", "目前平台：本機 Gemma 4\\n模型：" + fileName + "\\n\\n之後回到聊天頁即可直接本機推論。第一次回覆會比較慢，因為需要載入模型。");
+    }
+
+    private String buildLocalGemmaStatus() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("本機模型資料夾：\\n");
+        File dir = getExternalFilesDir("models");
+        sb.append(dir == null ? "無法取得" : dir.getAbsolutePath()).append("\\n\\n");
+        for (String size : new String[] {"E2B", "E4B"}) {
+            LocalModelInfo info = localModelInfo(size);
+            File file = new File(localGemmaPathFor(info.fileName));
+            sb.append(info.title).append("\\n");
+            sb.append("檔名：").append(info.fileName).append("\\n");
+            sb.append("狀態：").append(file.exists() ? "已找到" : "未下載").append("\\n");
+            sb.append("大小：").append(file.exists() ? formatBytes(file.length()) : "—").append("\\n");
+            sb.append("路徑：").append(file.getAbsolutePath()).append("\\n\\n");
+        }
+        return sb.toString();
+    }
+
+    private String localGemmaPathFor(String modelName) {
+        File dir = getExternalFilesDir("models");
+        if (dir == null) dir = new File(getFilesDir(), "models");
+        if (!dir.exists()) dir.mkdirs();
+        String fileName = modelName == null || modelName.trim().isEmpty() ? "gemma-4-E2B-it.litertlm" : modelName.trim();
+        return new File(dir, fileName).getAbsolutePath();
+    }
+
+    private LocalModelInfo localModelInfo(String size) {
+        if ("E4B".equalsIgnoreCase(size)) {
+            return new LocalModelInfo(
+                "Gemma 4 E4B LiteRT-LM",
+                "gemma-4-E4B-it.litertlm",
+                "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true",
+                3000000000L
+            );
+        }
+        return new LocalModelInfo(
+            "Gemma 4 E2B LiteRT-LM",
+            "gemma-4-E2B-it.litertlm",
+            "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true",
+            2000000000L
+        );
+    }
+
+    private String buildLocalPrompt(List<ChatMessage> source, int maxChars) {
+        StringBuilder sb = new StringBuilder();
+        int used = 0;
+        int start = Math.max(0, source.size() - 12);
+        for (int i = start; i < source.size(); i++) {
+            ChatMessage m = source.get(i);
+            String line = ("user".equals(m.role) ? "使用者：" : "助理：") + (m.content == null ? "" : m.content) + "\\n";
+            if (used + line.length() > maxChars) break;
+            sb.append(line);
+            used += line.length();
+        }
+        sb.append("\\n請根據以上對話，回答最後一個使用者問題。");
+        return sb.toString();
+    }
+
+    private static String formatBytes(long bytes) {
+        double v = bytes;
+        String[] units = {"B", "KB", "MB", "GB"};
+        int i = 0;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return String.format(Locale.TAIWAN, "%.2f %s", v, units[i]);
+    }
+
+    private static class LocalModelInfo {
+        final String title;
+        final String fileName;
+        final String url;
+        final long minimumBytes;
+        LocalModelInfo(String title, String fileName, String url, long minimumBytes) {
+            this.title = title;
+            this.fileName = fileName;
+            this.url = url;
+            this.minimumBytes = minimumBytes;
+        }
     }
 
     private void showServerPage() {
@@ -988,7 +1209,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v1.4.7\n");
+        sb.append("- App 版本：v1.5.2\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");
@@ -1216,6 +1437,13 @@ public class MainActivity extends Activity {
     private int dp(int n) { return (int) (n * getResources().getDisplayMetrics().density + 0.5f); }
     private void setStatus(String s) { if (status != null) status.setText(s); appLog("STATUS｜" + s); }
     private void toast(String s) { appLog("TOAST｜" + s); Toast.makeText(this, s, Toast.LENGTH_LONG).show(); }
+
+    private int reasoningIndex(String code) {
+        if ("medium".equals(code)) return 1;
+        if ("low".equals(code)) return 2;
+        if ("none".equals(code)) return 3;
+        return 0;
+    }
 
     private int providerIndex(String code) {
         for (int i = 0; i < providerCodes.length; i++) if (providerCodes[i].equals(code)) return i;

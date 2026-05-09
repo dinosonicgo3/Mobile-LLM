@@ -1,5 +1,6 @@
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 android {
@@ -10,8 +11,8 @@ android {
         applicationId = "com.oracleairescue"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.4.7"
+        versionCode = 25
+        versionName = "1.5.2"
     }
 
     signingConfigs {
@@ -47,4 +48,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.github.mwiede:jsch:0.2.21")
     implementation("androidx.core:core:1.13.1")
+    implementation("io.noties.markwon:core:4.6.2")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
 }

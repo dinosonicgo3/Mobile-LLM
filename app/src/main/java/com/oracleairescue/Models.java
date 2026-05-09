@@ -10,6 +10,9 @@ class ModelSettings {
     String modelName = "gemini-2.5-flash";
     double temperature = 0.2;
     int maxContextCharacters = 60000;
+    String geminiReasoningEffort = "high";
+    boolean hideThoughts = true;
+    boolean renderMarkdown = true;
 
     ModelSettings copy() {
         ModelSettings m = new ModelSettings();
@@ -19,6 +22,9 @@ class ModelSettings {
         m.modelName = modelName;
         m.temperature = temperature;
         m.maxContextCharacters = maxContextCharacters;
+        m.geminiReasoningEffort = geminiReasoningEffort;
+        m.hideThoughts = hideThoughts;
+        m.renderMarkdown = renderMarkdown;
         return m;
     }
 }

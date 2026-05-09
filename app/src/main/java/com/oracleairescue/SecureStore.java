@@ -35,6 +35,9 @@ class SecureStore {
         put("model." + p + ".modelName", m.modelName);
         put("model." + p + ".temperature", String.valueOf(m.temperature));
         put("model." + p + ".maxContextCharacters", String.valueOf(m.maxContextCharacters));
+        put("model." + p + ".geminiReasoningEffort", m.geminiReasoningEffort);
+        put("model." + p + ".hideThoughts", String.valueOf(m.hideThoughts));
+        put("model.renderMarkdown", String.valueOf(m.renderMarkdown));
     }
 
     ModelSettings loadModel() {
@@ -57,6 +60,9 @@ class SecureStore {
         m.modelName = get("model." + p + ".modelName", legacyModelName);
         m.temperature = parseDouble(get("model." + p + ".temperature", "0.2"), 0.2);
         m.maxContextCharacters = Math.max(8000, Math.min(200000, parseInt(get("model." + p + ".maxContextCharacters", "60000"), 60000)));
+        m.geminiReasoningEffort = get("model." + p + ".geminiReasoningEffort", "high");
+        m.hideThoughts = Boolean.parseBoolean(get("model." + p + ".hideThoughts", "true"));
+        m.renderMarkdown = Boolean.parseBoolean(get("model.renderMarkdown", "true"));
         return m;
     }
 
@@ -355,7 +361,7 @@ class SecureStore {
 
 
     private static String safeProvider(String provider) {
-        if ("nim".equals(provider) || "kaggle".equals(provider) || "custom".equals(provider)) return provider;
+        if ("nim".equals(provider) || "kaggle".equals(provider) || "local_gemma".equals(provider) || "custom".equals(provider)) return provider;
         return "gemini";
     }
 
@@ -364,6 +370,7 @@ class SecureStore {
         m.provider = provider;
         if ("nim".equals(provider)) { m.baseUrl = "https://integrate.api.nvidia.com/v1"; m.modelName = "meta/llama-3.1-70b-instruct"; }
         else if ("kaggle".equals(provider)) { m.baseUrl = "https://你的-kaggle-隧道網址/v1"; m.modelName = "Qwen/Qwen3.6-27B"; }
+        else if ("local_gemma".equals(provider)) { m.baseUrl = ""; m.modelName = "gemma-4-E2B-it.litertlm"; }
         else if ("custom".equals(provider)) { m.baseUrl = "https://example.com/v1"; m.modelName = "your-model-name"; }
         else { m.baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"; m.modelName = "gemini-2.5-flash"; }
         return m;
@@ -380,6 +387,9 @@ class SecureStore {
         } else if ("nim".equals(provider)) {
             out.add(new ModelOption("meta/llama-3.1-70b-instruct", "Llama 3.1 70B Instruct", "NVIDIA NIM 常用聊天模型。"));
             out.add(new ModelOption("qwen/qwen2.5-coder-32b-instruct", "Qwen2.5 Coder 32B", "NVIDIA NIM 常用程式模型，實際可用性以 /models 回傳為準。"));
+        } else if ("local_gemma".equals(provider)) {
+            out.add(new ModelOption("gemma-4-E2B-it.litertlm", "本機 Gemma 4 E2B 加速", "手機本地 LiteRT-LM 模型，支援 speculative decoding / MTP。"));
+            out.add(new ModelOption("gemma-4-E4B-it.litertlm", "本機 Gemma 4 E4B 加速", "手機本地 LiteRT-LM 模型，支援 speculative decoding / MTP，高階手機建議。"));
         } else if ("gemini".equals(provider)) {
             out.add(new ModelOption("gemini-2.5-flash", "Gemini 2.5 Flash", "Google API 常用快速模型。"));
             out.add(new ModelOption("gemini-2.5-pro", "Gemini 2.5 Pro", "Google API 常用高能力模型。"));

@@ -7,6 +7,7 @@ class RepairPrompts {
         "你負責協助診斷 LLM API、Docker、systemd、Python、Node.js、網路與磁碟問題。" +
         "你不能要求使用者把 API Key、SSH 私鑰、GitHub Token 貼給你。" +
         "所有會修改檔案、刪除資料、重啟服務、安裝套件的動作，都必須先列出風險與指令，等待使用者確認。" +
+        "不要輸出思考過程、內部推理、chain-of-thought；只輸出最終答案、摘要、步驟與必要理由。" +
         "回答請用繁體中文，盡量具體、可執行。";
 
     static String diagnosisPrompt(String raw) {
