@@ -64,6 +64,8 @@ public class MainActivity extends Activity {
     private ServerSettings serverSettings;
     private UpdateSettings updateSettings;
     private RuntimeConfig runtimeConfig;
+    private String verifier31BModelName = "gemma-4-31b-it";
+    private String verifierNim31BModelName = "google/gemma-4-31b-it";
     private final List<ChatMessage> chatMessages = new ArrayList<>();
 
     private Spinner chatModelSpinner;
@@ -87,10 +89,12 @@ public class MainActivity extends Activity {
         serverSettings = store.loadServer();
         updateSettings = store.loadUpdateSettings();
         runtimeConfig = store.loadRuntimeConfig();
+        verifier31BModelName = store.loadVerifier31BModelName();
+        verifierNim31BModelName = store.loadVerifierNim31BModelName();
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v1.5.7｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v1.6.5｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -133,7 +137,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.5.7");
+        title.setText("甲骨文雲端AI  v1.6.5");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -282,6 +286,26 @@ public class MainActivity extends Activity {
         chatInput.setText("");
         chatMessages.add(new ChatMessage("user", text));
         renderChatLog();
+
+        // v1.6.2：Oracle 相關問題改用工具式 Agent。
+        // 由 LLM 決定要呼叫哪個安全工具，而不是 App 先掃一大包塞給模型。
+        if (isOracleIntent(text) && !"local_gemma".equals(modelSettings.provider)) {
+            runTask("Oracle Agent 正在選擇工具…", () -> {
+                String reply = runOracleToolAgent(text);
+                String finalReply = reply == null || reply.trim().isEmpty()
+                    ? "Oracle Agent 沒有產生回覆。請改用『維修』頁的有限診斷封包，或匯出 LOG 給我。"
+                    : reply;
+                ui.post(() -> {
+                    appLog("ORACLE TOOL AGENT 回覆｜長度：" + finalReply.length());
+                    chatMessages.add(new ChatMessage("assistant", finalReply));
+                    store.saveChat(chatMessages);
+                    renderChatLog();
+                    setStatus("Oracle Agent 完成");
+                });
+            });
+            return;
+        }
+
         runTask("正在呼叫模型…", () -> {
             OracleContextPack oraclePack = maybeCollectOracleContext(text);
             if (oraclePack.used) {
@@ -298,6 +322,8 @@ public class MainActivity extends Activity {
                 if (oraclePack.used) localPrompt = localPrompt + "\n\n[Oracle Cloud 自動診斷資料]\n" + oraclePack.text;
                 String reply = LocalGemmaRunner.generate(this, modelPath, localPrompt, runtimeConfig.systemPrompt);
                 reply = cleanModelThoughts(reply);
+                if ((reply == null || reply.trim().isEmpty()) && oraclePack.used) reply = buildOracleBlankReplyFallback(oraclePack);
+                if (reply == null || reply.trim().isEmpty()) reply = "本機模型回覆是空白。請改用 Google / NVIDIA 模型，或匯出 LOG 回報。";
                 String finalReply = reply;
                 ui.post(() -> {
                     appLog("LOCAL GEMMA 收到回覆｜長度：" + (finalReply == null ? 0 : finalReply.length()));
@@ -320,9 +346,13 @@ public class MainActivity extends Activity {
                 payload.add(new ChatMessage("user", "以下是 App 已透過 SSH 自動讀取的 Oracle Cloud 真實狀態，請根據這些資料回答使用者，不要再要求使用者自己去 OCI Console 查。\n\n" + oraclePack.text));
             }
             String reply = llm.sendChat(modelSettings.copy(), payload);
+            reply = cleanModelThoughts(reply);
+            if ((reply == null || reply.trim().isEmpty()) && oraclePack.used) reply = buildOracleBlankReplyFallback(oraclePack);
+            if (reply == null || reply.trim().isEmpty()) reply = "模型回覆是空白。請改用另一個模型，或到右上角齒輪匯出 LOG 回報。";
+            String finalReply = reply;
             ui.post(() -> {
-                appLog("CHAT 收到回覆｜長度：" + (reply == null ? 0 : reply.length()));
-                chatMessages.add(new ChatMessage("assistant", reply));
+                appLog("CHAT 收到回覆｜長度：" + (finalReply == null ? 0 : finalReply.length()));
+                chatMessages.add(new ChatMessage("assistant", finalReply));
                 store.saveChat(chatMessages);
                 renderChatLog();
                 setStatus("回覆完成");
@@ -330,6 +360,266 @@ public class MainActivity extends Activity {
         });
     }
 
+
+
+    private boolean isOracleIntent(String userText) {
+        String q = userText == null ? "" : userText.toLowerCase(Locale.ROOT);
+        return q.contains("甲骨文") || q.contains("oracle") || q.contains("oci") ||
+            q.contains("雲端") || q.contains("主機") || q.contains("伺服器") ||
+            q.contains("專案") || q.contains("服務") || q.contains("docker") ||
+            q.contains("container") || q.contains("容器") || q.contains("log") ||
+            q.contains("日誌") || q.contains("維修") || q.contains("故障") ||
+            q.contains("部署") || q.contains("更新") || q.contains("重啟") ||
+            q.contains("檢查") || q.contains("狀態");
+    }
+
+    private String runOracleToolAgent(String userText) {
+        if (serverSettings == null || serverSettings.host == null || serverSettings.host.trim().isEmpty()) {
+            return "我判斷這是 Oracle Cloud 問題，但 App 尚未設定 Oracle SSH 主機。請先到 Oracle 頁填入主機、Port、使用者與私鑰。";
+        }
+        if ((serverSettings.privateKey == null || serverSettings.privateKey.trim().isEmpty()) &&
+            (serverSettings.password == null || serverSettings.password.trim().isEmpty())) {
+            return "我判斷這是 Oracle Cloud 問題，但 App 尚未設定 SSH 私鑰或密碼。";
+        }
+
+        StringBuilder observations = new StringBuilder();
+        List<ChatMessage> msgs = new ArrayList<>();
+        msgs.add(new ChatMessage("system",
+            runtimeConfig.systemPrompt + "\n\n"
+            + "你是 Oracle Cloud 工具式維修 Agent。你不能假裝已經查看主機。"
+            + "你必須自己決定是否需要使用工具。"
+            + "如果使用者問甲骨文有哪些專案、服務、Docker、狀態，第一步通常要使用 list_projects 或 list_docker/list_services。"
+            + "每次只呼叫一個工具，不要一次要求大量 logs。"
+            + "App 只允許安全白名單工具；寫檔、刪除、重啟、安裝不在此工具迴圈內，必須由使用者在維修頁確認。"
+            + "\n\n可用工具：\n"
+            + "TOOL: list_projects\n"
+            + "用途：列最近專案候選、Docker/systemd/ports 摘要。\n\n"
+            + "TOOL: list_docker\n"
+            + "用途：列 Docker 容器與 compose 摘要。\n\n"
+            + "TOOL: list_services\n"
+            + "用途：列疑似 AI/LLM/Python/Node/Docker systemd services 與 failed services。\n\n"
+            + "TOOL: service_status\nARGS: name=<service 名稱>\n"
+            + "用途：查單一 service 狀態與少量 journal。\n\n"
+            + "TOOL: container_logs\nARGS: name=<container 名稱> lines=<最多120>\n"
+            + "用途：查單一 Docker 容器最近 log。\n\n"
+            + "TOOL: list_dir\nARGS: path=<目錄>\n"
+            + "用途：列單一目錄與淺層檔案。\n\n"
+            + "TOOL: read_file\nARGS: path=<檔案路徑>\n"
+            + "用途：讀取單一檔案前 20000 字元。\n\n"
+            + "TOOL: run_safe\nARGS: command=<只讀安全指令>\n"
+            + "用途：執行只讀指令。禁止 sudo、rm、mv、cp、chmod、chown、kill、restart、start、stop、install、write、tee、curl|sh 等。\n\n"
+            + "TOOL: final\nANSWER: <最終回答>\n\n"
+            + "回覆格式必須只用上述格式，不要 Markdown code fence。工具結果不足時再選下一個工具；足夠時用 final。"));
+        msgs.add(new ChatMessage("user",
+            "使用者問題：" + userText + "\n\n"
+            + "請你決定下一個最小工具。若你還沒查看主機，不要直接回答有哪些專案。"));
+
+        String lastModelText = "";
+        for (int step = 1; step <= 5; step++) {
+            String modelText;
+            try {
+                modelText = llm.sendChat(modelSettings.copy(), msgs);
+                modelText = cleanModelThoughts(modelText);
+            } catch (Exception e) {
+                if (observations.length() > 0) {
+                    return "模型在 Oracle 工具迴圈中失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage()
+                        + "\n\n以下是目前已取得的工具結果摘要：\n\n```text\n" + compactForModel(observations.toString(), 12000) + "\n```";
+                }
+                return "模型在選擇 Oracle 工具時失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage();
+            }
+            lastModelText = modelText == null ? "" : modelText.trim();
+            OracleToolCall call = parseOracleToolCall(lastModelText);
+
+            if (call == null) {
+                if (observations.length() > 0) {
+                    msgs.add(new ChatMessage("assistant", lastModelText));
+                    msgs.add(new ChatMessage("user", "你剛才沒有使用指定工具格式。請根據目前工具結果，用 TOOL: final 與 ANSWER: 給最終答案。\n\n目前工具結果：\n" + compactForModel(observations.toString(), 12000)));
+                    continue;
+                }
+                return lastModelText.isEmpty() ? "模型沒有選擇工具，也沒有產生回答。" : lastModelText;
+            }
+
+            if ("final".equals(call.tool)) {
+                String ans = call.arg("answer");
+                if (ans.isEmpty()) ans = stripToolHeader(lastModelText);
+                return ans.trim().isEmpty() ? "Oracle Agent 完成，但 final 內容是空白。" : ans.trim();
+            }
+
+            String observation = executeOracleTool(call);
+            observation = compactForModel(observation, 7000);
+            observations.append("\n\n===== STEP ").append(step).append(" TOOL ").append(call.tool).append(" =====\n").append(observation);
+            appLog("ORACLE TOOL｜step=" + step + "｜tool=" + call.tool + "｜obsLength=" + observation.length());
+
+            msgs.add(new ChatMessage("assistant", lastModelText));
+            msgs.add(new ChatMessage("user",
+                "工具 `" + call.tool + "` 執行結果如下。請判斷是否還需要下一個最小工具；若足夠，請用 TOOL: final。不要要求整包 logs。\n\n"
+                + observation));
+        }
+
+        return "Oracle Agent 已達 5 步工具上限。以下是已取得的工具結果，請根據這些結果判斷下一步：\n\n```text\n"
+            + compactForModel(observations.toString(), 16000) + "\n```\n\n最後一次模型輸出：\n" + lastModelText;
+    }
+
+    private OracleToolCall parseOracleToolCall(String text) {
+        if (text == null) return null;
+        String x = text.trim();
+        Matcher m = Pattern.compile("(?im)^\\s*TOOL\\s*:\\s*([a-zA-Z0-9_\\-]+)\\s*$").matcher(x);
+        if (!m.find()) return null;
+        OracleToolCall call = new OracleToolCall();
+        call.tool = m.group(1).trim().toLowerCase(Locale.ROOT);
+        call.raw = x;
+
+        Matcher args = Pattern.compile("(?im)^\\s*ARGS\\s*:\\s*(.*)$").matcher(x);
+        if (args.find()) call.args = args.group(1).trim();
+
+        Matcher answer = Pattern.compile("(?is)ANSWER\\s*:\\s*(.*)$").matcher(x);
+        if (answer.find()) call.answer = answer.group(1).trim();
+        return call;
+    }
+
+    private String stripToolHeader(String text) {
+        if (text == null) return "";
+        return text.replaceFirst("(?is)^\\s*TOOL\\s*:\\s*final\\s*", "")
+            .replaceFirst("(?is)^\\s*ANSWER\\s*:\\s*", "")
+            .trim();
+    }
+
+    private String executeOracleTool(OracleToolCall call) {
+        if (call == null || call.tool == null) return "工具請求無效。";
+        String command;
+        int timeout = 90000;
+        switch (call.tool) {
+            case "list_projects":
+                command = buildOracleLightScanCommand();
+                break;
+            case "list_docker":
+                command = "set +e\n"
+                    + "echo '==== docker ps ===='\n"
+                    + "(docker ps -a --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}' 2>/dev/null || echo 'docker unavailable or permission denied')\n"
+                    + "echo '==== docker compose ls ===='\n"
+                    + "(docker compose ls 2>/dev/null || true)\n";
+                break;
+            case "list_services":
+                command = "set +e\n"
+                    + "echo '==== failed services ===='\n"
+                    + "(systemctl --failed --no-pager 2>/dev/null | head -n 30 || true)\n"
+                    + "echo '==== likely services ===='\n"
+                    + "(systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -Ei 'ai|llm|openclaw|hermes|oracle|docker|nginx|caddy|python|node|uvicorn|fastapi|ollama|vllm|kaggle' | head -n 80 || true)\n";
+                break;
+            case "service_status": {
+                String name = safeToolArg(call.arg("name"));
+                if (name.isEmpty()) return "service_status 需要 ARGS: name=<service 名稱>";
+                command = "set +e\n"
+                    + "echo '==== service status ===='\n"
+                    + "(systemctl status " + DiagnosticCommands.shellQuote(name) + " --no-pager -l || true)\n"
+                    + "echo '==== journal tail ===='\n"
+                    + "(journalctl -u " + DiagnosticCommands.shellQuote(name) + " -n 100 --no-pager 2>/dev/null || true)\n";
+                break;
+            }
+            case "container_logs": {
+                String name = safeToolArg(call.arg("name"));
+                int lines = Math.max(20, Math.min(120, parseToolInt(call.arg("lines"), 80)));
+                if (name.isEmpty()) return "container_logs 需要 ARGS: name=<container 名稱> lines=<20-120>";
+                command = "set +e\n"
+                    + "echo '==== docker inspect status ===='\n"
+                    + "(docker inspect " + DiagnosticCommands.shellQuote(name) + " --format '{{.Name}} {{.State.Status}} {{.State.ExitCode}} {{.State.Error}}' 2>/dev/null || true)\n"
+                    + "echo '==== docker logs tail ===='\n"
+                    + "(docker logs --tail=" + lines + " " + DiagnosticCommands.shellQuote(name) + " 2>&1 || true)\n";
+                timeout = 120000;
+                break;
+            }
+            case "list_dir": {
+                String path = safeToolPath(call.arg("path"));
+                if (path.isEmpty()) return "list_dir 需要 ARGS: path=<目錄>，且路徑需在 /home、/opt、/srv、/var/www 內。";
+                command = "set +e\n"
+                    + "cd " + DiagnosticCommands.shellQuote(path) + " 2>/dev/null && pwd && ls -la | head -n 80 && echo '==== shallow files ====' && find . -maxdepth 2 -type f | head -n 120\n";
+                break;
+            }
+            case "read_file": {
+                String path = safeToolPath(call.arg("path"));
+                if (path.isEmpty()) return "read_file 需要 ARGS: path=<檔案路徑>，且路徑需在 /home、/opt、/srv、/var/www 內。";
+                command = "set +e\n"
+                    + "echo '==== file metadata ===='\n"
+                    + "(ls -lh " + DiagnosticCommands.shellQuote(path) + " 2>/dev/null || true)\n"
+                    + "echo '==== file head max 20000 bytes ===='\n"
+                    + "(head -c 20000 " + DiagnosticCommands.shellQuote(path) + " 2>/dev/null || true)\n";
+                break;
+            }
+            case "run_safe": {
+                String c = call.arg("command").trim();
+                if (!isSafeReadOnlyToolCommand(c)) return "run_safe 被拒絕：只允許讀取型安全指令，且禁止 sudo/寫入/刪除/重啟/安裝。";
+                command = c;
+                break;
+            }
+            default:
+                return "未知工具：" + call.tool;
+        }
+
+        try {
+            CommandResult r = new SshClient(serverSettings).runCommand(command, timeout);
+            return "exitCode=" + r.exitCode + "\n" + maskSensitive(r.asText());
+        } catch (Exception e) {
+            return "工具執行失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage();
+        }
+    }
+
+    private boolean isSafeReadOnlyToolCommand(String c) {
+        if (c == null) return false;
+        String x = c.trim();
+        if (x.isEmpty() || x.length() > 500) return false;
+        String lower = x.toLowerCase(Locale.ROOT);
+        if (lower.contains("sudo") || lower.contains(" rm ") || lower.startsWith("rm ") ||
+            lower.contains(" mv ") || lower.startsWith("mv ") ||
+            lower.contains(" cp ") || lower.startsWith("cp ") ||
+            lower.contains("chmod") || lower.contains("chown") ||
+            lower.contains("kill") || lower.contains("restart") ||
+            lower.contains(" start ") || lower.contains(" stop ") ||
+            lower.contains("install") || lower.contains("apt ") ||
+            lower.contains("tee ") || lower.contains(">") || lower.contains(">>") ||
+            lower.contains("| sh") || lower.contains("| bash")) return false;
+        return lower.startsWith("ls ") || lower.equals("ls") ||
+            lower.startsWith("cat ") || lower.startsWith("head ") || lower.startsWith("tail ") ||
+            lower.startsWith("grep ") || lower.startsWith("find ") ||
+            lower.startsWith("pwd") || lower.startsWith("df ") || lower.equals("df -h") ||
+            lower.startsWith("free ") || lower.startsWith("uptime") ||
+            lower.startsWith("ss ") || lower.startsWith("netstat ") ||
+            lower.startsWith("docker ps") || lower.startsWith("docker inspect") ||
+            lower.startsWith("systemctl status") || lower.startsWith("journalctl ");
+    }
+
+    private String safeToolArg(String s) {
+        if (s == null) return "";
+        return s.replaceAll("[\\r\\n\\t]", " ").trim();
+    }
+
+    private String safeToolPath(String s) {
+        String p = safeToolArg(s);
+        if (p.contains("..") || p.contains(";") || p.contains("|") || p.contains("&") || p.contains(">") || p.contains("<")) return "";
+        if (!(p.startsWith("/home/") || p.startsWith("/opt/") || p.startsWith("/srv/") || p.startsWith("/var/www/"))) return "";
+        return p;
+    }
+
+    private int parseToolInt(String s, int def) {
+        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; }
+    }
+
+    private static class OracleToolCall {
+        String tool = "";
+        String args = "";
+        String answer = "";
+        String raw = "";
+        String arg(String name) {
+            if ("answer".equals(name)) return answer == null ? "" : answer;
+            if (args == null) return "";
+            Pattern p = Pattern.compile("(?i)(^|\\s)" + Pattern.quote(name) + "\\s*=\\s*([^\\s]+)");
+            Matcher m = p.matcher(args);
+            if (m.find()) return m.group(2).trim();
+            Pattern p2 = Pattern.compile("(?im)^\\s*" + Pattern.quote(name) + "\\s*[:：]\\s*(.+)$");
+            Matcher m2 = p2.matcher(raw == null ? "" : raw);
+            if (m2.find()) return m2.group(1).trim();
+            return "";
+        }
+    }
 
     private OracleContextPack maybeCollectOracleContext(String userText) {
         OracleContextPack pack = new OracleContextPack();
@@ -360,13 +650,16 @@ public class MainActivity extends Activity {
         try {
             appLog("ORACLE AUTO CONTEXT｜開始 SSH 探測｜host=" + serverSettings.host + "｜query=" + limit(userText, 160));
             String command = buildOracleAutoContextCommand();
-            CommandResult r = new SshClient(serverSettings).runCommand(command, 180000);
+            CommandResult r = new SshClient(serverSettings).runCommand(command, 90000);
+            String raw = r.asText() == null ? "" : r.asText();
             pack.used = true;
             pack.text = "SSH 目標：" + serverSettings.username + "@" + serverSettings.host + ":" + serverSettings.port + "\n"
                 + "使用者問題：" + userText + "\n"
                 + "SSH exitCode：" + r.exitCode + "\n\n"
-                + maskSensitive(limit(r.asText(), 50000));
-            appLog("ORACLE AUTO CONTEXT｜完成｜exit=" + r.exitCode + "｜長度=" + pack.text.length());
+                + (raw.trim().isEmpty()
+                    ? "警告：SSH 輕量掃描已執行，但沒有回傳任何 stdout/stderr。請到維修頁執行「只掃描 Oracle 並直接顯示結果」。"
+                    : maskSensitive(limit(raw, 12000)));
+            appLog("ORACLE LIGHT CONTEXT｜完成｜exit=" + r.exitCode + "｜rawLength=" + raw.length() + "｜packLength=" + pack.text.length());
             return pack;
         } catch (Exception e) {
             pack.used = true;
@@ -379,67 +672,81 @@ public class MainActivity extends Activity {
     }
 
     private String buildOracleAutoContextCommand() {
+        return buildOracleLightScanCommand();
+    }
+
+    private String buildOracleLightScanCommand() {
         StringBuilder sb = new StringBuilder();
         sb.append("set +e\n");
-        sb.append("echo '==== ORACLE_AUTO_CONTEXT_START ===='\n");
+        sb.append("echo '==== ORACLE_LIGHT_SCAN_START ===='\n");
         sb.append("echo 'time='$(date '+%F %T %Z')\n");
-        sb.append("echo 'whoami='$(whoami)\n");
-        sb.append("echo 'hostname='$(hostname)\n");
-        sb.append("echo 'pwd='$(pwd)\n");
-        sb.append("echo '==== OS ===='\n");
-        sb.append("(cat /etc/os-release 2>/dev/null || uname -a)\n");
-        sb.append("echo '==== UPTIME / MEMORY / DISK ===='\n");
+        sb.append("echo 'user='$(whoami)' host='$(hostname)' pwd='$(pwd)\n");
+        sb.append("echo '==== SYSTEM SUMMARY ===='\n");
         sb.append("(uptime || true)\n");
-        sb.append("(free -h || true)\n");
-        sb.append("(df -h / /home /opt 2>/dev/null || df -h || true)\n");
-        sb.append("echo '==== NETWORK PORTS ===='\n");
-        sb.append("(ss -lntp 2>/dev/null || netstat -lntp 2>/dev/null || true)\n");
-        sb.append("echo '==== COMMON PROJECT DIRECTORIES ===='\n");
-        sb.append("for d in /home/ubuntu /home/opc /opt /srv /var/www; do if [ -d \"$d\" ]; then echo \"---- $d ----\"; find \"$d\" -maxdepth 3 \\( -name .git -o -name docker-compose.yml -o -name compose.yml -o -name package.json -o -name pyproject.toml -o -name requirements.txt -o -name app.py -o -name main.py -o -name Dockerfile \\) 2>/dev/null | sed 's#/.git$##' | head -n 120; fi; done\n");
-        sb.append("echo '==== AUTO PROJECT DISCOVERY / LATEST CANDIDATES ===='\n");
+        sb.append("(free -h | sed -n '1,2p' || true)\n");
+        sb.append("(df -h / /home /opt 2>/dev/null | head -n 6 || df -h | head -n 8 || true)\n");
+        sb.append("echo '==== RECENT PROJECT CANDIDATES TOP 12 ===='\n");
         sb.append("TMP_PROJECTS=$(mktemp)\n");
         sb.append("for root in /home/ubuntu /home/opc /opt /srv /var/www; do [ -d \"$root\" ] || continue; find \"$root\" -maxdepth 5 \\( -name .git -o -name docker-compose.yml -o -name compose.yml -o -name package.json -o -name pyproject.toml -o -name requirements.txt -o -name Dockerfile -o -name app.py -o -name main.py \\) -print 2>/dev/null; done | sed -E 's#/(.git|docker-compose.yml|compose.yml|package.json|pyproject.toml|requirements.txt|Dockerfile|app.py|main.py)$##' | sort -u > $TMP_PROJECTS\n");
-        sb.append("while read p; do [ -d \"$p\" ] || continue; mt=$(find \"$p\" -maxdepth 3 -type f -printf '%T@\\n' 2>/dev/null | sort -nr | head -n1); [ -z \"$mt\" ] && mt=0; printf '%s\\t%s\\n' \"$mt\" \"$p\"; done < $TMP_PROJECTS | sort -nr | head -n 20 | while IFS=$'\\t' read mt p; do echo \"---- PROJECT: $p ----\"; date -d @${mt%.*} '+last_modified=%F %T' 2>/dev/null || true; ls -la \"$p\" 2>/dev/null | head -n 40; if [ -d \"$p/.git\" ]; then (cd \"$p\" && echo '[git]' && git remote -v 2>/dev/null | head -n 5 && git status --short 2>/dev/null | head -n 40 && git log -1 --oneline 2>/dev/null); fi; echo '[candidate files]'; find \"$p\" -maxdepth 3 -type f \\( -name '*.py' -o -name '*.js' -o -name '*.ts' -o -name '*.json' -o -name '*.yml' -o -name '*.yaml' -o -name '*.service' -o -name 'Dockerfile' -o -name 'requirements.txt' -o -name 'package.json' \\) -printf '%TY-%Tm-%Td %TH:%TM %p\\n' 2>/dev/null | sort -r | head -n 50; done\n");
+        sb.append("while read p; do [ -d \"$p\" ] || continue; mt=$(find \"$p\" -maxdepth 3 -type f -printf '%T@\\n' 2>/dev/null | sort -nr | head -n1); [ -z \"$mt\" ] && mt=0; printf '%s\\t%s\\n' \"$mt\" \"$p\"; done < $TMP_PROJECTS | sort -nr | head -n 12 | while IFS=$'\\t' read mt p; do echo \"---- $p ----\"; date -d @${mt%.*} '+last_modified=%F %T' 2>/dev/null || true; echo -n 'markers='; [ -d \"$p/.git\" ] && echo -n '.git '; [ -f \"$p/docker-compose.yml\" ] && echo -n 'docker-compose.yml '; [ -f \"$p/compose.yml\" ] && echo -n 'compose.yml '; [ -f \"$p/package.json\" ] && echo -n 'package.json '; [ -f \"$p/requirements.txt\" ] && echo -n 'requirements.txt '; [ -f \"$p/pyproject.toml\" ] && echo -n 'pyproject.toml '; [ -f \"$p/Dockerfile\" ] && echo -n 'Dockerfile '; [ -f \"$p/main.py\" ] && echo -n 'main.py '; [ -f \"$p/app.py\" ] && echo -n 'app.py '; echo; if [ -d \"$p/.git\" ]; then (cd \"$p\" && echo -n 'git=' && git log -1 --oneline 2>/dev/null && echo -n 'branch=' && git branch --show-current 2>/dev/null && echo -n 'dirty=' && git status --short 2>/dev/null | wc -l); fi; done\n");
         sb.append("rm -f $TMP_PROJECTS\n");
-        sb.append("echo '==== DOCKER CONTAINER MOUNTS ===='\n");
-        sb.append("for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | head -n 20); do echo \"---- $c ----\"; docker inspect \"$c\" --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' 2>/dev/null; done\n");
-        sb.append("echo '==== SYSTEMD EXECSTART CANDIDATES ===='\n");
-        sb.append("for s in $(systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}' | grep -Ei 'ai|llm|openclaw|hermes|oracle|python|node|uvicorn|fastapi|docker|vllm' | head -n 40); do echo \"---- $s ----\"; systemctl show \"$s\" -p FragmentPath -p ExecStart -p WorkingDirectory -p MainPID --no-pager 2>/dev/null; done\n");
-        if (serverSettings.projectPath != null && serverSettings.projectPath.trim().length() > 0) {
-            sb.append("echo '==== CONFIGURED PROJECT PATH ===='\n");
-            sb.append("cd ").append(DiagnosticCommands.shellQuote(serverSettings.projectPath.trim())).append(" 2>/dev/null && pwd && ls -la && (git status --short 2>/dev/null || true) && (git log -1 --oneline 2>/dev/null || true)\n");
-        } else {
-            sb.append("echo '==== CONFIGURED PROJECT PATH ===='\n");
-            sb.append("echo 'App 尚未設定專案路徑，所以正在自動掃描常見位置。'\n");
-        }
-        sb.append("echo '==== SYSTEMD FAILED ===='\n");
-        sb.append("(systemctl --failed --no-pager || true)\n");
-        sb.append("echo '==== SYSTEMD SERVICES LIKELY RELATED ===='\n");
-        sb.append("(systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -Ei 'ai|llm|openclaw|hermes|oracle|docker|nginx|caddy|python|node|uvicorn|fastapi|ollama|vllm|kaggle' | head -n 120 || true)\n");
-        if (serverSettings.serviceName != null && serverSettings.serviceName.trim().length() > 0) {
-            sb.append("echo '==== CONFIGURED SERVICE STATUS ===='\n");
-            sb.append("(systemctl status ").append(DiagnosticCommands.shellQuote(serverSettings.serviceName.trim())).append(" --no-pager -l || true)\n");
-            sb.append("echo '==== CONFIGURED SERVICE LOG ===='\n");
-            sb.append("(journalctl -u ").append(DiagnosticCommands.shellQuote(serverSettings.serviceName.trim())).append(" -n 160 --no-pager || true)\n");
-        } else {
-            sb.append("echo '==== CONFIGURED SERVICE STATUS ===='\n");
-            sb.append("echo 'App 尚未設定 Service 名稱。'\n");
-        }
-        sb.append("echo '==== DOCKER PS ===='\n");
-        sb.append("(docker ps -a --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}' 2>/dev/null || echo 'docker unavailable or permission denied')\n");
-        sb.append("echo '==== DOCKER COMPOSE PROJECTS ===='\n");
-        sb.append("(docker compose ls 2>/dev/null || true)\n");
-        if (serverSettings.dockerContainer != null && serverSettings.dockerContainer.trim().length() > 0) {
-            sb.append("echo '==== CONFIGURED DOCKER LOG ===='\n");
-            sb.append("(docker logs --tail=180 ").append(DiagnosticCommands.shellQuote(serverSettings.dockerContainer.trim())).append(" 2>&1 || true)\n");
-        } else {
-            sb.append("echo '==== RECENT DOCKER LOGS SAMPLE ===='\n");
-            sb.append("for c in $(docker ps --format '{{.Names}}' 2>/dev/null | head -n 5); do echo \"---- docker logs $c ----\"; docker logs --tail=80 \"$c\" 2>&1; done\n");
-        }
-        sb.append("echo '==== RECENT JOURNAL ERRORS ===='\n");
-        sb.append("(journalctl -p warning -n 120 --no-pager 2>/dev/null || true)\n");
-        sb.append("echo '==== ORACLE_AUTO_CONTEXT_END ===='\n");
+        sb.append("echo '==== DOCKER CONTAINERS SUMMARY ===='\n");
+        sb.append("(docker ps -a --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}' 2>/dev/null | head -n 25 || echo 'docker unavailable or permission denied')\n");
+        sb.append("echo '==== DOCKER COMPOSE LS ===='\n");
+        sb.append("(docker compose ls 2>/dev/null | head -n 20 || true)\n");
+        sb.append("echo '==== LIKELY SYSTEMD SERVICES SUMMARY ===='\n");
+        sb.append("(systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -Ei 'ai|llm|openclaw|hermes|oracle|docker|nginx|caddy|python|node|uvicorn|fastapi|ollama|vllm|kaggle' | head -n 40 || true)\n");
+        sb.append("echo '==== FAILED SERVICES SUMMARY ===='\n");
+        sb.append("(systemctl --failed --no-pager 2>/dev/null | head -n 30 || true)\n");
+        sb.append("echo '==== LISTENING PORTS SUMMARY ===='\n");
+        sb.append("(ss -lntp 2>/dev/null | head -n 35 || true)\n");
+        sb.append("echo '==== ORACLE_LIGHT_SCAN_END ===='\n");
         return sb.toString();
+    }
+
+    private String buildOracleDeepScanCommand() {
+        return buildOracleDiagnosticPacketCommand();
+    }
+
+    private String buildOracleDiagnosticPacketCommand() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("set +e\n");
+        sb.append("echo '==== DIAGNOSTIC_PACKET_START ===='\n");
+        sb.append("echo 'time='$(date '+%F %T %Z')\n");
+        sb.append("echo 'user='$(whoami)' host='$(hostname)' pwd='$(pwd)\n");
+        sb.append("echo '==== 1_SYSTEM_BRIEF ===='\n");
+        sb.append("(uptime || true)\n");
+        sb.append("(free -h | sed -n '1,2p' || true)\n");
+        sb.append("(df -h / /home /opt 2>/dev/null | head -n 6 || df -h | head -n 8 || true)\n");
+        sb.append("echo '==== 2_PROJECT_INDEX_TOP10 ===='\n");
+        sb.append("TMP_PROJECTS=$(mktemp)\n");
+        sb.append("for root in /home/ubuntu /home/opc /opt /srv /var/www; do [ -d \"$root\" ] || continue; find \"$root\" -maxdepth 5 \\( -name .git -o -name docker-compose.yml -o -name compose.yml -o -name package.json -o -name pyproject.toml -o -name requirements.txt -o -name Dockerfile -o -name app.py -o -name main.py \\) -print 2>/dev/null; done | sed -E 's#/(.git|docker-compose.yml|compose.yml|package.json|pyproject.toml|requirements.txt|Dockerfile|app.py|main.py)$##' | sort -u > $TMP_PROJECTS\n");
+        sb.append("while read p; do [ -d \"$p\" ] || continue; mt=$(find \"$p\" -maxdepth 3 -type f -printf '%T@\\n' 2>/dev/null | sort -nr | head -n1); [ -z \"$mt\" ] && mt=0; printf '%s\\t%s\\n' \"$mt\" \"$p\"; done < $TMP_PROJECTS | sort -nr | head -n 10 | while IFS=$'\\t' read mt p; do echo \"PROJECT=$p\"; date -d @${mt%.*} '+last_modified=%F %T' 2>/dev/null || true; echo -n 'markers='; [ -d \"$p/.git\" ] && echo -n '.git '; [ -f \"$p/docker-compose.yml\" ] && echo -n 'docker-compose.yml '; [ -f \"$p/compose.yml\" ] && echo -n 'compose.yml '; [ -f \"$p/package.json\" ] && echo -n 'package.json '; [ -f \"$p/requirements.txt\" ] && echo -n 'requirements.txt '; [ -f \"$p/pyproject.toml\" ] && echo -n 'pyproject.toml '; [ -f \"$p/Dockerfile\" ] && echo -n 'Dockerfile '; [ -f \"$p/main.py\" ] && echo -n 'main.py '; [ -f \"$p/app.py\" ] && echo -n 'app.py '; echo; if [ -d \"$p/.git\" ]; then (cd \"$p\" && echo -n 'git_last=' && git log -1 --oneline 2>/dev/null && echo -n 'git_dirty_count=' && git status --short 2>/dev/null | wc -l); fi; echo; done\n");
+        sb.append("rm -f $TMP_PROJECTS\n");
+        sb.append("echo '==== 3_DOCKER_STATUS_BRIEF ===='\n");
+        sb.append("(docker ps -a --format '{{.Names}} | {{.Image}} | {{.Status}} | {{.Ports}}' 2>/dev/null | head -n 20 || echo 'docker unavailable or permission denied')\n");
+        sb.append("echo '==== 4_DOCKER_SUSPICIOUS_CONTAINERS ===='\n");
+        sb.append("for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | head -n 20); do st=$(docker inspect \"$c\" --format '{{.State.Status}} {{.State.ExitCode}} {{.State.Error}}' 2>/dev/null); echo \"$c | $st\" | grep -Ei 'exited|dead|restarting|error|[1-9][0-9]*' || true; done\n");
+        sb.append("echo '==== 5_SYSTEMD_FAILED_AND_SUSPICIOUS ===='\n");
+        sb.append("(systemctl --failed --no-pager 2>/dev/null | head -n 25 || true)\n");
+        sb.append("(systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -Ei 'failed|activating|deactivating|ai|llm|openclaw|hermes|oracle|docker|nginx|caddy|python|node|uvicorn|fastapi|ollama|vllm|kaggle' | head -n 45 || true)\n");
+        sb.append("echo '==== 6_PORTS_BRIEF ===='\n");
+        sb.append("(ss -lntp 2>/dev/null | head -n 35 || true)\n");
+        sb.append("echo '==== 7_ERROR_HINTS_ONLY ===='\n");
+        sb.append("(journalctl -p err -n 35 --no-pager 2>/dev/null | sed -E 's/[A-Za-z0-9_+.-]+@[A-Za-z0-9_.-]+/[email]/g' || true)\n");
+        sb.append("echo '==== 8_NEXT_TARGETS_HINT ===='\n");
+        sb.append("echo 'If diagnosis is insufficient, ask user/app to run a targeted command for ONE service/container/project path, not full logs.'\n");
+        sb.append("echo '==== DIAGNOSTIC_PACKET_END ===='\n");
+        return sb.toString();
+    }
+
+    private String compactForModel(String raw, int maxChars) {
+        if (raw == null) return "";
+        String x = raw;
+        x = x.replaceAll("(?m)^\\s*$\\n", "");
+        x = x.replaceAll("(?m)(^.*\\bDEBUG\\b.*$\\n?){5,}", "[大量 DEBUG 行已省略]\\n");
+        x = x.replaceAll("(?m)(^.*\\bINFO\\b.*$\\n?){8,}", "[大量 INFO 行已省略]\\n");
+        return limit(x, maxChars);
     }
 
     private String buildSystemPromptWithOracleContext(String basePrompt, OracleContextPack pack) {
@@ -450,7 +757,7 @@ public class MainActivity extends Activity {
             + "當使用者詢問甲骨文、Oracle、主機、服務、Docker、log、專案、故障、部署、維修時，"
             + "你必須優先使用 App 已透過 SSH 收集的真實主機資料回答。"
             + "不要只給 OCI Console 的一般教學，不要要求使用者自己查。"
-            + "使用者的雲端專案可能隨時更改，所以不要依賴固定專案路徑；請優先根據 AUTO PROJECT DISCOVERY / LATEST CANDIDATES、Docker mounts、systemd ExecStart 判斷最新專案。"
+            + "使用者的雲端專案可能隨時更改，所以不要依賴固定專案路徑；聊天頁只會提供輕量掃描摘要，請先根據 RECENT PROJECT CANDIDATES、Docker containers、systemd services 判斷最新專案；只有深度診斷才會查看 logs。"
             + "若要修改程式，先指出你判斷的目標專案、目標檔案與理由；寫回前必須保留備份與確認。"
             + "回答時請用繁體中文，直接指出目前主機上看得到的最新專案/服務/容器/錯誤。";
     }
@@ -550,6 +857,48 @@ public class MainActivity extends Activity {
 
         box.addView(label("Markdown 顯示：已啟用。AI 回覆的標題、列表、程式碼區塊會用 Markdown 方式顯示。", 13, true));
 
+        addSection(box, "後段驗證：Gemma 4 31B + NVIDIA NIM 備援");
+        box.addView(label("安全修復流程會固定用 Gemma 4 31B 做後段驗證。順序：先用 Google API；若 Google API 失敗，改用 NVIDIA NIM 的 Gemma 4 31B。NVIDIA 官方 NIM 模型 ID 已內建為 google/gemma-4-31b-it；兩者都失敗時，App 會判定後段驗證失敗並阻擋自動寫回/保留修復。", 13, false));
+        EditText verifierModel = edit("Google 31B 驗證模型名稱，預設 gemma-4-31b-it", false);
+        verifierModel.setText(verifier31BModelName);
+        box.addView(verifierModel);
+
+        EditText verifierNimModel = edit("NVIDIA NIM 備援 31B 模型名稱：google/gemma-4-31b-it", false);
+        verifierNimModel.setText(verifierNim31BModelName);
+        box.addView(verifierNimModel);
+
+        LinearLayout verifierRow = row();
+        Button testVerifier = button("測試 Google 31B");
+        testVerifier.setOnClickListener(v -> {
+            verifier31BModelName = verifierModel.getText().toString().trim();
+            store.saveVerifier31BModelName(verifier31BModelName);
+            runTask("正在測試 Google Gemma 4 31B 驗證模型…", () -> {
+                ModelSettings vs = googleVerifier31BSettings();
+                List<ChatMessage> testMsgs = new ArrayList<>();
+                testMsgs.add(new ChatMessage("system", "你是後段驗證模型。請只回覆 VERDICT: PASS。"));
+                testMsgs.add(new ChatMessage("user", "測試連線。"));
+                String out = llm.sendChat(vs, testMsgs);
+                ui.post(() -> showTextDialog("Google 31B 驗證模型測試", cleanModelThoughts(out)));
+            });
+        });
+
+        Button testNimVerifier = button("測試 NIM 31B");
+        testNimVerifier.setOnClickListener(v -> {
+            verifierNim31BModelName = verifierNimModel.getText().toString().trim();
+            store.saveVerifierNim31BModelName(verifierNim31BModelName);
+            runTask("正在測試 NVIDIA NIM Gemma 4 31B 備援驗證模型…", () -> {
+                ModelSettings vs = nimVerifier31BSettings();
+                List<ChatMessage> testMsgs = new ArrayList<>();
+                testMsgs.add(new ChatMessage("system", "你是後段驗證模型。請只回覆 VERDICT: PASS。"));
+                testMsgs.add(new ChatMessage("user", "測試連線。"));
+                String out = llm.sendChat(vs, testMsgs);
+                ui.post(() -> showTextDialog("NIM 31B 備援驗證模型測試", cleanModelThoughts(out)));
+            });
+        });
+        verifierRow.addView(testVerifier, weight());
+        verifierRow.addView(testNimVerifier, weight());
+        box.addView(verifierRow);
+
         TextView catalogInfo = label("目前平台：" + providerTitle(modelSettings.provider) + "｜本平台模型清單：" + store.loadCatalog(modelSettings.provider).size() + "｜本平台常用模型：" + store.loadFavorites(modelSettings.provider).size(), 14, false);
         box.addView(catalogInfo);
 
@@ -583,6 +932,10 @@ public class MainActivity extends Activity {
             modelSettings.geminiReasoningEffort = thinkingCodes[thinkingSpinner.getSelectedItemPosition()];
             modelSettings.hideThoughts = true;
             modelSettings.renderMarkdown = true;
+            verifier31BModelName = verifierModel.getText().toString().trim();
+            verifierNim31BModelName = verifierNimModel.getText().toString().trim();
+            store.saveVerifier31BModelName(verifier31BModelName);
+            store.saveVerifierNim31BModelName(verifierNim31BModelName);
             store.saveModel(modelSettings);
             toast("已儲存，之後開啟不用重填 KEY。也請不要把 KEY 貼給任何 AI。 ");
         });
@@ -1168,23 +1521,167 @@ public class MainActivity extends Activity {
     }
 
 
-    private String buildOracleProjectDiscoveryCommand() {
+    private String buildOracleDiagnosticPacketCommand() {
+        return buildOracleDeepScanCommand();
+    }
+
+
+    private ModelSettings googleVerifier31BSettings() {
+        ModelSettings v = store.loadModelFor("gemini");
+        if ((v.apiKey == null || v.apiKey.trim().isEmpty()) && "gemini".equals(modelSettings.provider)) {
+            v.apiKey = modelSettings.apiKey;
+            v.baseUrl = modelSettings.baseUrl;
+        }
+        v.provider = "gemini";
+        if (v.baseUrl == null || v.baseUrl.trim().isEmpty()) v.baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai";
+        v.modelName = verifier31BModelName == null || verifier31BModelName.trim().isEmpty() ? "gemma-4-31b-it" : verifier31BModelName.trim();
+        v.temperature = 0.0;
+        v.maxContextCharacters = 60000;
+        v.geminiReasoningEffort = "high";
+        v.hideThoughts = true;
+        v.renderMarkdown = false;
+        return v;
+    }
+
+
+    private ModelSettings nimVerifier31BSettings() {
+        ModelSettings v = store.loadModelFor("nim");
+        if ((v.apiKey == null || v.apiKey.trim().isEmpty()) && "nim".equals(modelSettings.provider)) {
+            v.apiKey = modelSettings.apiKey;
+            v.baseUrl = modelSettings.baseUrl;
+        }
+        v.provider = "nim";
+        if (v.baseUrl == null || v.baseUrl.trim().isEmpty()) v.baseUrl = "https://integrate.api.nvidia.com/v1";
+        v.modelName = verifierNim31BModelName == null || verifierNim31BModelName.trim().isEmpty() ? "google/gemma-4-31b-it" : verifierNim31BModelName.trim();
+        v.temperature = 0.0;
+        v.maxContextCharacters = 60000;
+        v.geminiReasoningEffort = "high";
+        v.hideThoughts = true;
+        v.renderMarkdown = false;
+        return v;
+    }
+
+    private String verifyPatchWith31B(String stage, String filePath, String userInstruction, String scanContext, String original, String proposed, String diff, String testOutput) throws Exception {
+        List<ChatMessage> msgs = build31BVerifierMessages(stage, filePath, userInstruction, scanContext, original, proposed, diff, testOutput);
+
+        StringBuilder failures = new StringBuilder();
+
+        ModelSettings google = googleVerifier31BSettings();
+        if (google.apiKey != null && !google.apiKey.trim().isEmpty()) {
+            try {
+                String out = cleanModelThoughts(llm.sendChat(google, msgs));
+                if (out != null && !out.trim().isEmpty()) {
+                    return "VERIFIER_PROVIDER: Google Gemini API\nVERIFIER_MODEL: " + google.modelName + "\n\n" + out;
+                }
+                failures.append("Google 31B：回覆空白\n");
+            } catch (Exception e) {
+                failures.append("Google 31B：").append(e.getClass().getSimpleName()).append("：").append(e.getMessage()).append("\n");
+            }
+        } else {
+            failures.append("Google 31B：未設定 Google API Key\n");
+        }
+
+        ModelSettings nim = nimVerifier31BSettings();
+        if (nim.apiKey != null && !nim.apiKey.trim().isEmpty()) {
+            try {
+                String out = cleanModelThoughts(llm.sendChat(nim, msgs));
+                if (out != null && !out.trim().isEmpty()) {
+                    return "VERIFIER_PROVIDER: NVIDIA NIM\nVERIFIER_MODEL: " + nim.modelName + "\n\n" + out;
+                }
+                failures.append("NVIDIA NIM 31B：回覆空白\n");
+            } catch (Exception e) {
+                failures.append("NVIDIA NIM 31B：").append(e.getClass().getSimpleName()).append("：").append(e.getMessage()).append("\n");
+            }
+        } else {
+            failures.append("NVIDIA NIM 31B：未設定 NVIDIA NIM API Key\n");
+        }
+
+        return "VERDICT: FAIL\n"
+            + "RISK: HIGH\n"
+            + "CHANGED: UNKNOWN\n"
+            + "TESTS_PASSED: UNKNOWN\n"
+            + "NEW_BUG_RISK: HIGH\n"
+            + "ROLLBACK_REQUIRED: YES\n"
+            + "REASON: Gemma 4 31B 後段驗證不可用。Google API 與 NVIDIA NIM 備援都無法完成驗證，因此 App 不應自動信任主模型修復結果。\n"
+            + "USER_SUMMARY: 後段驗證失敗，App 已阻擋自動寫回或保留修復。你可以稍後重試、檢查 Google/NVIDIA Key 與模型名稱，或改用人工方式處理；不建議直接相信主模型結果。\n\n"
+            + "【驗證失敗原因】\n" + failures.toString();
+    }
+
+    private List<ChatMessage> build31BVerifierMessages(String stage, String filePath, String userInstruction, String scanContext, String original, String proposed, String diff, String testOutput) {
+        List<ChatMessage> msgs = new ArrayList<>();
+        msgs.add(new ChatMessage("system",
+            "你是 Gemma 4 31B 後段驗證模型，只負責驗證，不負責自由發明修法。"
+            + "你必須根據 diff、測試輸出與證據判斷修復是否可保留。"
+            + "通過標準很嚴格：必須真的有修改、修改與需求相關、沒有高風險操作、測試輸出不能顯示錯誤。"
+            + "如果是 FINAL_AFTER_TESTS，只有在測試明確通過且沒有新錯誤時才能 PASS。"
+            + "請用固定格式回覆：\n"
+            + "VERDICT: PASS 或 FAIL\n"
+            + "RISK: LOW / MEDIUM / HIGH\n"
+            + "CHANGED: YES / NO\n"
+            + "TESTS_PASSED: YES / NO / NOT_RUN\n"
+            + "NEW_BUG_RISK: LOW / MEDIUM / HIGH\n"
+            + "ROLLBACK_REQUIRED: YES / NO\n"
+            + "REASON: 繁體中文原因\n"
+            + "USER_SUMMARY: 給不懂程式使用者看的繁體中文摘要"));
+        String payload = "STAGE: " + stage
+            + "\nFILE: " + filePath
+            + "\nUSER_REQUEST: " + userInstruction
+            + "\n\n[SCAN_CONTEXT]\n" + limit(scanContext == null ? "" : scanContext, 8000)
+            + "\n\n[DIFF]\n" + limit(diff == null ? "" : diff, 16000)
+            + "\n\n[TEST_OUTPUT]\n" + limit(testOutput == null ? "" : testOutput, 12000)
+            + "\n\n[ORIGINAL_HEAD]\n" + limit(original == null ? "" : original, 12000)
+            + "\n\n[PROPOSED_HEAD]\n" + limit(proposed == null ? "" : proposed, 12000);
+        msgs.add(new ChatMessage("user", payload));
+        return msgs;
+    }
+
+    private boolean verifierPassed(String report) {
+        if (report == null) return false;
+        String r = report.toUpperCase(Locale.ROOT);
+        boolean pass = r.contains("VERDICT: PASS");
+        boolean fail = r.contains("VERDICT: FAIL");
+        boolean high = r.contains("RISK: HIGH") || r.contains("NEW_BUG_RISK: HIGH") || r.contains("ROLLBACK_REQUIRED: YES");
+        boolean changedNo = r.contains("CHANGED: NO");
+        boolean testsFail = r.contains("TESTS_PASSED: NO");
+        return pass && !fail && !high && !changedNo && !testsFail;
+    }
+
+    private String buildValidationCommand(String path) {
+        String p = path == null ? "" : path.trim();
+        String q = DiagnosticCommands.shellQuote(p);
         StringBuilder sb = new StringBuilder();
         sb.append("set +e\n");
-        sb.append("echo '==== PROJECT_DISCOVERY_START ===='\n");
-        sb.append("echo 'time='$(date '+%F %T %Z')\n");
-        sb.append("echo 'host='$(hostname)' user='$(whoami)\n");
-        sb.append("TMP_PROJECTS=$(mktemp)\n");
-        sb.append("for root in /home/ubuntu /home/opc /opt /srv /var/www; do [ -d \"$root\" ] || continue; find \"$root\" -maxdepth 6 \\( -name .git -o -name docker-compose.yml -o -name compose.yml -o -name package.json -o -name pyproject.toml -o -name requirements.txt -o -name Dockerfile -o -name app.py -o -name main.py \\) -print 2>/dev/null; done | sed -E 's#/(.git|docker-compose.yml|compose.yml|package.json|pyproject.toml|requirements.txt|Dockerfile|app.py|main.py)$##' | sort -u > $TMP_PROJECTS\n");
-        sb.append("echo '==== LATEST PROJECTS SORTED BY MODIFIED TIME ===='\n");
-        sb.append("while read p; do [ -d \"$p\" ] || continue; mt=$(find \"$p\" -maxdepth 4 -type f -printf '%T@\\n' 2>/dev/null | sort -nr | head -n1); [ -z \"$mt\" ] && mt=0; printf '%s\\t%s\\n' \"$mt\" \"$p\"; done < $TMP_PROJECTS | sort -nr | head -n 30 | while IFS=$'\\t' read mt p; do echo \"---- PROJECT: $p ----\"; date -d @${mt%.*} '+last_modified=%F %T' 2>/dev/null || true; echo '[top files]'; find \"$p\" -maxdepth 4 -type f \\( -name '*.py' -o -name '*.js' -o -name '*.ts' -o -name '*.json' -o -name '*.yml' -o -name '*.yaml' -o -name '*.sh' -o -name 'Dockerfile' -o -name 'requirements.txt' -o -name 'package.json' \\) -printf '%TY-%Tm-%Td %TH:%TM %p\\n' 2>/dev/null | sort -r | head -n 80; if [ -d \"$p/.git\" ]; then (cd \"$p\" && echo '[git]' && git remote -v 2>/dev/null | head -n 5 && git status --short 2>/dev/null | head -n 80 && git log -3 --oneline 2>/dev/null); fi; done\n");
-        sb.append("echo '==== DOCKER CONTAINERS AND MOUNTS ===='\n");
-        sb.append("(docker ps -a --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}' 2>/dev/null || true)\n");
-        sb.append("for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | head -n 30); do echo \"---- $c mounts ----\"; docker inspect \"$c\" --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' 2>/dev/null; done\n");
-        sb.append("echo '==== SYSTEMD EXECSTART ===='\n");
-        sb.append("for s in $(systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}' | grep -Ei 'ai|llm|openclaw|hermes|oracle|python|node|uvicorn|fastapi|docker|vllm|nginx|caddy' | head -n 60); do echo \"---- $s ----\"; systemctl show \"$s\" -p FragmentPath -p ExecStart -p WorkingDirectory -p MainPID --no-pager 2>/dev/null; done\n");
-        sb.append("rm -f $TMP_PROJECTS\n");
-        sb.append("echo '==== PROJECT_DISCOVERY_END ===='\n");
+        sb.append("FILE=").append(q).append("\n");
+        sb.append("DIR=$(dirname \"$FILE\")\n");
+        sb.append("BASE=$(basename \"$FILE\")\n");
+        sb.append("EXIT=0\n");
+        sb.append("echo '==== VALIDATION START ===='\n");
+        sb.append("echo \"file=$FILE\"\n");
+        sb.append("(ls -lh \"$FILE\" || EXIT=1)\n");
+        sb.append("case \"$FILE\" in\n");
+        sb.append("  *.py) echo '==== python syntax ===='; python3 -m py_compile \"$FILE\" || EXIT=1 ;;\n");
+        sb.append("  *.js|*.mjs|*.cjs) echo '==== node syntax ===='; if command -v node >/dev/null 2>&1; then node --check \"$FILE\" || EXIT=1; else echo 'node not installed, skip node --check'; fi ;;\n");
+        sb.append("  *.sh|*.bash) echo '==== bash syntax ===='; bash -n \"$FILE\" || EXIT=1 ;;\n");
+        sb.append("  *.json) echo '==== json syntax ===='; python3 -m json.tool \"$FILE\" >/dev/null || EXIT=1 ;;\n");
+        sb.append("  *.yml|*.yaml) echo '==== yaml basic check ===='; python3 - <<'PY' \"$FILE\" || EXIT=1\n");
+        sb.append("import sys\n");
+        sb.append("p=sys.argv[1]\n");
+        sb.append("try:\n");
+        sb.append("    import yaml\n");
+        sb.append("    yaml.safe_load(open(p, 'r', encoding='utf-8'))\n");
+        sb.append("    print('yaml ok')\n");
+        sb.append("except ModuleNotFoundError:\n");
+        sb.append("    print('PyYAML not installed, yaml syntax check skipped')\n");
+        sb.append("except Exception as e:\n");
+        sb.append("    print('yaml error:', e)\n");
+        sb.append("    sys.exit(1)\n");
+        sb.append("PY\n");
+        sb.append("  ;;\n");
+        sb.append("esac\n");
+        sb.append("if [ -f \"$DIR/docker-compose.yml\" ] || [ -f \"$DIR/compose.yml\" ]; then echo '==== docker compose config ===='; (cd \"$DIR\" && docker compose config -q) || EXIT=1; fi\n");
+        sb.append("echo '==== nearby git diff summary ===='; (cd \"$DIR\" 2>/dev/null && git diff --stat 2>/dev/null | head -n 40 || true)\n");
+        sb.append("echo '==== VALIDATION END exit='${EXIT} '===='\n");
+        sb.append("exit $EXIT\n");
         return sb.toString();
     }
 
@@ -1194,6 +1691,15 @@ public class MainActivity extends Activity {
         Button diag = button("一鍵診斷 Oracle Cloud 並交給 AI 分析");
         diag.setOnClickListener(v -> runDiagnostics());
         box.addView(diag);
+
+        Button rawScan = button("建立有限診斷封包並直接顯示（不呼叫模型）");
+        rawScan.setOnClickListener(v -> runTask("正在建立有限診斷封包…", () -> {
+            CommandResult r = new SshClient(serverSettings).runCommand(buildOracleDiagnosticPacketCommand(), 240000);
+            String out = maskSensitive(r.asText());
+            store.appendHistory(new RepairHistory(now(), "直接掃描 Oracle", out));
+            ui.post(() -> showTextDialog("Oracle 有限診斷封包", out.trim().isEmpty() ? "掃描完成，但輸出是空白。請檢查 SSH 權限或匯出 LOG。" : out));
+        }));
+        box.addView(rawScan);
 
         addSection(box, "安全執行指令");
         EditText cmd = edit("輸入要執行的指令，例如 systemctl status xxx --no-pager", true);
@@ -1217,12 +1723,12 @@ public class MainActivity extends Activity {
         EditText path = edit("遠端檔案路徑，例如 /home/ubuntu/my-ai/main.py；可由掃描結果決定", false);
         box.addView(path);
         final String[] latestProjectScan = new String[] {""};
-        Button scanProjects = button("自動掃描最新專案 / 服務 / 容器");
-        scanProjects.setOnClickListener(v -> runTask("正在自動掃描最新專案…", () -> {
-            CommandResult r = new SshClient(serverSettings).runCommand(buildOracleProjectDiscoveryCommand(), 240000);
+        Button scanProjects = button("建立專案索引 / 服務 / 容器摘要");
+        scanProjects.setOnClickListener(v -> runTask("正在建立專案索引…", () -> {
+            CommandResult r = new SshClient(serverSettings).runCommand(buildOracleDiagnosticPacketCommand(), 240000);
             latestProjectScan[0] = maskSensitive(limit(r.asText(), 70000));
             store.appendHistory(new RepairHistory(now(), "自動掃描最新專案", latestProjectScan[0]));
-            ui.post(() -> showTextDialog("最新專案掃描結果", latestProjectScan[0] + "\n\n請把你要修的檔案路徑填入「遠端檔案路徑」。若你不確定，可在聊天頁問：根據剛剛掃描結果，應該修哪個檔案？"));
+            ui.post(() -> showTextDialog("專案索引結果", latestProjectScan[0] + "\n\n請把你要修的檔案路徑填入「遠端檔案路徑」。若你不確定，可在聊天頁問：根據剛剛掃描結果，應該修哪個檔案？"));
         }));
         box.addView(scanProjects);
         EditText instruction = edit("你要 AI 怎麼修，例如：修正啟動失敗錯誤，保留原功能；AI 會參考最新掃描結果", true);
@@ -1232,6 +1738,8 @@ public class MainActivity extends Activity {
         box.addView(fileBox, new LinearLayout.LayoutParams(-1, dp(220)));
         final String[] original = new String[] {""};
         final String[] proposed = new String[] {""};
+        final String[] preVerifyReport = new String[] {""};
+        final boolean[] preVerifyPassed = new boolean[] {false};
         LinearLayout row1 = row();
         Button read = button("讀取檔案");
         read.setOnClickListener(v -> runTask("正在讀取檔案…", () -> {
@@ -1248,21 +1756,109 @@ public class MainActivity extends Activity {
                 ? "尚未執行最新專案掃描。請只根據指定檔案修正。"
                 : latestProjectScan[0];
             msgs.add(new ChatMessage("user", "【最新 Oracle 專案掃描資料】\n" + scanContext + "\n\n檔案路徑：" + path.getText().toString().trim() + "\n修正要求：" + instruction.getText().toString().trim() + "\n\n原始檔案：\n" + original[0]));
-            runTask("正在讓 AI 修正檔案…", () -> {
+            runTask("正在讓 AI 修正檔案並用 31B 預審…", () -> {
                 String content = llm.sendChat(modelSettings.copy(), msgs);
                 proposed[0] = stripCodeFence(content);
                 String diff = DiffUtil.unifiedDiff(original[0], proposed[0]);
-                ui.post(() -> showTextDialog("修改差異", diff));
+
+                if (proposed[0].trim().isEmpty() || proposed[0].equals(original[0])) {
+                    preVerifyPassed[0] = false;
+                    preVerifyReport[0] = "VERDICT: FAIL\nRISK: HIGH\nREASON: AI 沒有產生有效修改，或修正版與原檔完全相同。";
+                } else {
+                    preVerifyReport[0] = verifyPatchWith31B(
+                        "PRE_WRITE_REVIEW",
+                        path.getText().toString().trim(),
+                        instruction.getText().toString().trim(),
+                        latestProjectScan[0],
+                        original[0],
+                        proposed[0],
+                        diff,
+                        "尚未寫回，因此尚無實際測試結果。請只判斷 diff 是否必要、是否高風險、是否可進入寫回後測試。"
+                    );
+                    preVerifyPassed[0] = verifierPassed(preVerifyReport[0]);
+                }
+
+                String result = "【修改差異】\n" + diff
+                    + "\n\n【Gemma 4 31B 寫回前預審】\n" + preVerifyReport[0]
+                    + "\n\n預審結果：" + (preVerifyPassed[0] ? "通過，可進入安全寫回與自動測試。" : "未通過，App 會阻擋寫回。");
+                ui.post(() -> showTextDialog("修改差異與 31B 預審", result));
             });
         });
         row1.addView(read, weight()); row1.addView(fix, weight()); box.addView(row1);
-        Button write = button("建立備份並寫回修正版");
+        Button write = button("安全寫回 + 自動測試 + 31B 最終驗證");
         write.setOnClickListener(v -> {
             if (proposed[0].isEmpty()) { toast("尚未產生修正版"); return; }
-            confirm("會先備份原檔，再寫回修正版。確定執行？", () -> runTask("正在備份並寫回…", () -> {
-                String backup = new SshClient(serverSettings).writeFileWithBackup(path.getText().toString().trim(), proposed[0]);
-                store.appendHistory(new RepairHistory(now(), "寫回檔案", "檔案：" + path.getText().toString().trim() + "\n備份：" + backup));
-                ui.post(() -> showTextDialog("完成", "已建立備份並寫回。\n備份檔：" + backup + "\n\n若要重啟服務，請使用安全執行指令或一鍵診斷建議。"));
+            if (!preVerifyPassed[0]) {
+                showTextDialog("已阻擋寫回", "Gemma 4 31B 後段驗證未通過或不可用，App 不會寫回檔案。\n\n【預審報告】\n" + preVerifyReport[0]);
+                return;
+            }
+            confirm("將執行安全修復流程：\n\n1. 建立備份\n2. 寫回修正版\n3. 自動執行語法 / 設定檢查\n4. Gemma 4 31B 根據測試結果最終驗證\n5. 測試或驗證失敗會自動回滾\n\n你不需要看懂程式，只需知道：失敗會回滾。", () -> runTask("正在安全寫回、測試並用 31B 最終驗證…", () -> {
+                String filePath = path.getText().toString().trim();
+                SshClient ssh = new SshClient(serverSettings);
+                String backup = "";
+                String validationText = "";
+                String finalReport = "";
+                boolean keep = false;
+
+                try {
+                    backup = ssh.writeFileWithBackup(filePath, proposed[0]);
+                    CommandResult validation = ssh.runCommand(buildValidationCommand(filePath), 180000);
+                    validationText = validation.asText();
+
+                    String diff = DiffUtil.unifiedDiff(original[0], proposed[0]);
+                    finalReport = verifyPatchWith31B(
+                        "FINAL_AFTER_TESTS",
+                        filePath,
+                        instruction.getText().toString().trim(),
+                        latestProjectScan[0],
+                        original[0],
+                        proposed[0],
+                        diff,
+                        "【App 自動測試輸出】\n" + validationText
+                    );
+
+                    boolean testsPassed = validation.exitCode == 0;
+                    boolean verifierOk = verifierPassed(finalReport);
+                    keep = testsPassed && verifierOk;
+
+                    if (!keep) {
+                        CommandResult rb = ssh.runCommand("cat -- " + DiagnosticCommands.shellQuote(backup) + " > " + DiagnosticCommands.shellQuote(filePath), 60000);
+                        String failReport = "修復驗證失敗，已嘗試自動回滾。\n\n"
+                            + "測試是否通過：" + testsPassed + "\n"
+                            + "31B 後段驗證是否通過：" + verifierOk + "\n"
+                            + "備份檔：" + backup + "\n"
+                            + "回滾結果：\n" + rb.asText() + "\n\n"
+                            + "【測試輸出】\n" + validationText + "\n\n"
+                            + "【31B 最終驗證】\n" + finalReport;
+                        store.appendHistory(new RepairHistory(now(), "修復失敗已回滾", failReport));
+                        ui.post(() -> showTextDialog("修復驗證失敗，已回滾", failReport));
+                        return;
+                    }
+
+                    String success = "安全修復驗證通過。\n\n"
+                        + "已修改：1 個檔案\n"
+                        + "檔案：" + filePath + "\n"
+                        + "備份：" + backup + "\n"
+                        + "自動測試：通過\n"
+                        + "Gemma 4 31B 最終驗證：通過\n\n"
+                        + "【測試輸出】\n" + validationText + "\n\n"
+                        + "【31B 最終驗證】\n" + finalReport;
+                    store.appendHistory(new RepairHistory(now(), "安全修復通過", success));
+                    ui.post(() -> showTextDialog("安全修復驗證通過", success));
+                } catch (Exception e) {
+                    String msg = "安全修復流程發生錯誤：" + e.getClass().getSimpleName() + "：" + e.getMessage();
+                    if (backup != null && backup.trim().length() > 0) {
+                        try {
+                            CommandResult rb = ssh.runCommand("cat -- " + DiagnosticCommands.shellQuote(backup) + " > " + DiagnosticCommands.shellQuote(filePath), 60000);
+                            msg += "\n\n已嘗試回滾：\n" + rb.asText();
+                        } catch (Exception rbEx) {
+                            msg += "\n\n回滾也失敗：" + rbEx.getClass().getSimpleName() + "：" + rbEx.getMessage();
+                        }
+                    }
+                    store.appendHistory(new RepairHistory(now(), "安全修復錯誤", msg));
+                    String finalMsg = msg;
+                    ui.post(() -> showTextDialog("安全修復錯誤", finalMsg));
+                }
             }));
         });
         box.addView(write);
@@ -1278,19 +1874,35 @@ public class MainActivity extends Activity {
     }
 
     private void runDiagnostics() {
-        List<String> commands = DiagnosticCommands.build(serverSettings, runtimeConfig);
-        runTask("正在診斷 Oracle Cloud…", () -> {
-            List<CommandResult> results = new SshClient(serverSettings).runCommands(commands, 90000);
-            StringBuilder raw = new StringBuilder();
-            for (CommandResult r : results) raw.append(r.asText()).append("\n");
-            CommandResult discovery = new SshClient(serverSettings).runCommand(buildOracleProjectDiscoveryCommand(), 240000);
-            raw.append("\n\n【自動最新專案掃描】\n").append(discovery.asText()).append("\n");
+        runTask("正在建立有限診斷封包…", () -> {
+            CommandResult packet = new SshClient(serverSettings).runCommand(buildOracleDiagnosticPacketCommand(), 180000);
+            String rawPacket = maskSensitive(packet.asText());
+            String modelPacket = compactForModel(rawPacket, 14000);
+
             List<ChatMessage> msgs = new ArrayList<>();
-            msgs.add(new ChatMessage("system", runtimeConfig.systemPrompt));
-            msgs.add(new ChatMessage("user", "請根據以下 Oracle Cloud 診斷輸出，判斷故障原因、風險、建議修復步驟。不要要求我重新提供上一輪已存在的資訊。\n\n" + raw));
-            String analysis = llm.sendChat(modelSettings.copy(), msgs);
-            store.appendHistory(new RepairHistory(now(), "一鍵診斷", "診斷輸出：\n" + raw + "\n\nAI 分析：\n" + analysis));
-            ui.post(() -> showTextDialog("診斷與 AI 分析", "【原始診斷】\n" + raw + "\n\n【AI 分析】\n" + analysis));
+            msgs.add(new ChatMessage("system",
+                runtimeConfig.systemPrompt + "\n\n"
+                + "你是 Oracle Cloud 維修分析助手。你只會收到有限大小的診斷封包，不是完整 log。"
+                + "請根據封包判斷最可能的專案、服務、容器與風險。"
+                + "如果資訊不足，請只提出下一個最小化目標查詢，例如：查某一個 service 狀態、某一個 container 最近 80 行 log、或某一個檔案。"
+                + "不要要求整包上傳所有 logs。"));
+            msgs.add(new ChatMessage("user", "請根據以下有限診斷封包，判斷目前 Oracle Cloud 狀態、可能問題、下一步最小化查詢。\\n\\n" + modelPacket));
+
+            String analysis;
+            try {
+                analysis = llm.sendChat(modelSettings.copy(), msgs);
+                analysis = cleanModelThoughts(analysis);
+                if (analysis == null || analysis.trim().isEmpty()) {
+                    analysis = "模型回覆空白。以下直接顯示有限診斷封包：\\n\\n```text\\n" + modelPacket + "\\n```";
+                }
+            } catch (Exception e) {
+                analysis = "模型分析失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage()
+                    + "\\n\\n以下直接顯示有限診斷封包，避免空白：\\n\\n```text\\n" + modelPacket + "\\n```";
+            }
+
+            store.appendHistory(new RepairHistory(now(), "有限診斷封包", "診斷封包：\\n" + rawPacket + "\\n\\nAI 分析：\\n" + analysis));
+            String finalAnalysis = analysis;
+            ui.post(() -> showTextDialog("有限診斷封包與 AI 分析", "【有限診斷封包】\\n" + rawPacket + "\\n\\n【AI 分析】\\n" + finalAnalysis));
         });
     }
 
@@ -1507,7 +2119,8 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v1.5.7\n");
+        sb.append("- App 版本：v1.6.0
+");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");

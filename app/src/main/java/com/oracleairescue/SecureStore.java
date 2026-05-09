@@ -192,6 +192,26 @@ class SecureStore {
 
     void clearHistory() { put("history", ""); }
 
+    String loadVerifier31BModelName() {
+        return get("verify31b.modelName", "gemma-4-31b-it");
+    }
+
+    void saveVerifier31BModelName(String modelName) {
+        String v = modelName == null ? "" : modelName.trim();
+        if (v.isEmpty()) v = "gemma-4-31b-it";
+        put("verify31b.modelName", v);
+    }
+
+    String loadVerifierNim31BModelName() {
+        return get("verify31b.nimModelName", "google/gemma-4-31b-it");
+    }
+
+    void saveVerifierNim31BModelName(String modelName) {
+        String v = modelName == null ? "" : modelName.trim();
+        if (v.isEmpty()) v = "google/gemma-4-31b-it";
+        put("verify31b.nimModelName", v);
+    }
+
     void appendAppLog(String line) {
         String old = get("app.logs", "");
         String item = sanitize(line);
@@ -385,6 +405,7 @@ class SecureStore {
             out.add(new ModelOption("qwen3.6-27b", "qwen3.6-27b", "備用短名稱，供自訂 FastAPI/vLLM 服務使用。"));
             out.add(new ModelOption("qwen3.6-35b", "qwen3.6-35b", "備用短名稱，供自訂 FastAPI/vLLM 服務使用。"));
         } else if ("nim".equals(provider)) {
+            out.add(new ModelOption("google/gemma-4-31b-it", "Gemma 4 31B IT（官方 NIM ID）", "NVIDIA 官方 API Reference / Build NVIDIA 確認的 Gemma 4 31B 模型 ID；用於後段驗證備援。"));
             out.add(new ModelOption("meta/llama-3.1-70b-instruct", "Llama 3.1 70B Instruct", "NVIDIA NIM 常用聊天模型。"));
             out.add(new ModelOption("qwen/qwen2.5-coder-32b-instruct", "Qwen2.5 Coder 32B", "NVIDIA NIM 常用程式模型，實際可用性以 /models 回傳為準。"));
         } else if ("local_gemma".equals(provider)) {

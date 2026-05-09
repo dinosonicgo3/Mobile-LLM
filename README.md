@@ -479,3 +479,173 @@ Download/OracleCloudAI/
 - 一鍵診斷會同時跑最新專案掃描。
 - AI 修正遠端檔案時會帶入最新掃描資料，但仍只會在使用者指定檔案後產生修正版。
 - 寫回檔案仍需使用者確認，並會備份原檔。
+
+
+## v1.5.8 Oracle 空白回覆防呆
+
+修正問題：
+
+- 使用者要求 AI 檢查 Oracle Cloud 時，若模型回覆空白，聊天頁不再只顯示空白。
+- App 會直接顯示已透過 SSH 取得的 Oracle 掃描資料。
+- 如果 SSH 掃描本身沒有輸出，也會明確提示可能是權限/指令/輸出截斷問題。
+
+新增：
+
+- 維修頁新增 `只掃描 Oracle 並直接顯示結果（不呼叫模型）`
+- 可用來確認 SSH 掃描本身是否正常，不受 LLM 回覆影響。
+
+
+## v1.6.0 Oracle 輕量掃描
+
+修正：v1.5.7 聊天頁自動掃描 Oracle 時輸出過大，曾達到約 5 萬字元，導致 NVIDIA NIM timeout。
+
+新的分層掃描：
+
+### 聊天頁自動掃描：輕量
+
+只收集：
+
+- 系統摘要
+- 最近修改的專案候選 Top 12
+- 專案 markers：`.git`、`docker-compose.yml`、`package.json`、`requirements.txt` 等
+- Docker containers 摘要
+- docker compose ls
+- 疑似 systemd services 摘要
+- failed services 摘要
+- listening ports 摘要
+
+不收集：
+
+- Docker logs
+- journalctl 大量紀錄
+- 大量檔案清單
+- systemd 完整 ExecStart 詳情
+
+### 維修頁深度掃描
+
+需要查錯誤或故障時，才使用深度掃描，包含 Docker mounts、systemd ExecStart、少量 recent errors。
+
+
+## v1.6.1 有限診斷封包
+
+修正架構問題：即使是深度診斷，也不應該把大量 raw logs 整包塞給 LLM。
+
+新的做法：
+
+- App 先在 SSH 端建立「有限診斷封包」
+- 只保留：
+  - 系統摘要
+  - 專案索引 Top 10
+  - Docker 狀態摘要
+  - 可疑 Docker 容器
+  - failed / suspicious systemd services
+  - ports 摘要
+  - journal error hints only
+- 送給 LLM 的內容限制約 14,000 字元
+- 如果資訊不足，LLM 必須提出下一個「最小化目標查詢」
+  - 例如查某一個 service
+  - 查某一個 container 最近 80 行 log
+  - 查某一個專案檔案
+- 不再要求整包 logs。
+
+
+## v1.6.2 Oracle 工具式 Agent
+
+修正架構方向：
+
+- 不再由 App 預先掃描一大包資料。
+- Oracle 相關聊天會進入「工具式 Agent」流程。
+- LLM 自己判斷下一步需要哪個工具。
+- App 只執行安全白名單工具。
+
+可用工具：
+
+```text
+list_projects
+list_docker
+list_services
+service_status name=<service>
+container_logs name=<container> lines=<20-120>
+list_dir path=<path>
+read_file path=<path>
+run_safe command=<read-only command>
+final
+```
+
+安全限制：
+
+- 每次只執行一個工具。
+- 工具結果會壓縮後再回給 LLM。
+- 自動工具只允許讀取型操作。
+- 寫檔、刪除、重啟、安裝、修改權限等操作不會自動執行，仍需使用者在維修頁確認。
+
+
+## v1.6.3 Gemma 4 31B 後段驗證流水線
+
+依使用者要求，修程式的後段驗證固定使用 Gemma 4 31B。
+
+新增安全修復流程：
+
+1. 主模型產生修正版
+2. Gemma 4 31B 寫回前預審
+   - 是否真的有修改
+   - 是否與需求相關
+   - 是否有高風險
+   - 是否可進入寫回後測試
+3. 寫回前自動備份原檔
+4. 寫回修正版
+5. App 自動執行驗證測試
+   - Python: `python3 -m py_compile`
+   - Node: `node --check`
+   - Shell: `bash -n`
+   - JSON: `python3 -m json.tool`
+   - Docker Compose: `docker compose config -q`
+6. Gemma 4 31B 根據 diff + 測試輸出做最終驗證
+7. 測試失敗或 31B 不通過：自動回滾
+8. 測試通過且 31B 通過：保留修復
+
+注意：
+
+- 必須在 Google Gemini 平台填入 Google API Key。
+- 預設 31B 驗證模型名稱：`gemma-4-31b-it`
+- 可以在設定頁修改 31B 驗證模型名稱。
+
+
+## v1.6.4 31B 後段驗證備援
+
+依需求調整後段驗證策略：
+
+1. 優先使用 Google Gemini API 的 Gemma 4 31B。
+2. 如果 Google API 失敗，改用 NVIDIA NIM 的 Gemma 4 31B。
+3. 如果 Google 與 NVIDIA NIM 都失敗：
+   - 後段驗證結果固定判定為 FAIL。
+   - App 會阻擋自動寫回或保留修復。
+   - 顯示失敗原因，讓使用者知道是驗證層不可用，而不是主模型修復已通過。
+   - 不會自動相信主模型結果。
+
+設定頁新增：
+
+- Google 31B 驗證模型名稱
+- NVIDIA NIM 備援 31B 模型名稱
+- 測試 Google 31B
+- 測試 NIM 31B
+
+注意：NVIDIA NIM 的模型 ID 可能依帳號與平台可用清單不同，請在 App 的 NIM 平台取得模型清單後，把實際 Gemma 4 31B 模型 ID 填到備援欄位。
+
+
+## v1.6.5 確認 NVIDIA NIM Gemma 4 31B 模型 ID
+
+已搜尋並確認 NVIDIA NIM 官方模型 ID：
+
+```text
+google/gemma-4-31b-it
+```
+
+調整：
+
+- NVIDIA NIM 備援 31B 驗證模型預設固定為 `google/gemma-4-31b-it`
+- 設定頁文字改為明確標示官方 ID
+- NVIDIA NIM 常用模型清單新增：
+  - `google/gemma-4-31b-it`
+- Google 31B 失敗時，App 會用此 NIM 模型做備援後段驗證
+- Google / NIM 都失敗時，仍判定後段驗證失敗並阻擋自動寫回或保留修復
