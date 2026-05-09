@@ -1,0 +1,1 @@
+v2.0.9：修正工具調用失敗根因。雲端 Agent 使用 unbuffered + RC sentinel；SSH exit=-1 等待修正；雲端 Agent 失效自動切換 App 直連 SSH 工具橋接。

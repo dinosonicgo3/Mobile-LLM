@@ -96,7 +96,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v2.0.8｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v2.1.0｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -139,7 +139,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v2.0.8");
+        title.setText("甲骨文雲端AI  v2.1.0");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -292,17 +292,17 @@ public class MainActivity extends Activity {
         // v2.0：Oracle 問題交給雲端本機 Rescue Agent。
         // App 只負責 SSH 部署/啟動 Agent；LLM 在 Oracle 端直接決定工具與修復流程。
         if (isOracleIntent(text) && !"local_gemma".equals(modelSettings.provider)) {
-            runTask("Oracle Rescue Agent 正在雲端執行…", () -> {
-                String reply = runOracleRescueAgent(text);
+            runTask("Oracle 維護 Agent 正在執行…", () -> {
+                String reply = runOracleMaintenanceAgent(text);
                 String finalReply = reply == null || reply.trim().isEmpty()
-                    ? "Oracle Rescue Agent 沒有產生回覆。請匯出 LOG 回報。"
+                    ? "Oracle 維護 Agent 沒有產生回覆。請匯出 LOG 回報。"
                     : reply;
                 ui.post(() -> {
-                    appLog("ORACLE RESCUE AGENT 回覆｜長度：" + finalReply.length());
+                    appLog("ORACLE MAINTENANCE AGENT 回覆｜長度=" + finalReply.length());
                     chatMessages.add(new ChatMessage("assistant", finalReply));
                     store.saveChat(chatMessages);
                     renderChatLog();
-                    setStatus("Oracle Rescue Agent 完成");
+                    setStatus("Oracle 維護 Agent 完成");
                 });
             });
             return;
@@ -375,6 +375,13 @@ public class MainActivity extends Activity {
             q.contains("檢查") || q.contains("狀態");
     }
 
+    private String runOracleMaintenanceAgent(String userText) throws Exception {
+        // v2.1.0 正式架構：單一主路徑採用雲端 Agent Runtime。
+        // App 只負責部署、啟動、等待、讀取 session log 與顯示結果；
+        // 不再把 App 直連 SSH 工具橋接作為第二套 Agent 主流程，避免雙路徑造成規範不一致與除錯混亂。
+        return runOracleRescueAgent(userText);
+    }
+
     private String runOracleRescueAgent(String userText) throws Exception {
         if (serverSettings == null || serverSettings.host == null || serverSettings.host.trim().isEmpty()) {
             return "Oracle 主機尚未設定。請先到 Oracle 頁填入主機、Port、使用者與私鑰。";
@@ -386,27 +393,95 @@ public class MainActivity extends Activity {
 
         SshClient ssh = new SshClient(serverSettings);
         String dir = remoteRescueAgentDir();
+        String sessionId = "session_" + new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT).format(new java.util.Date()) + "_" + Math.abs((int)(System.nanoTime() % 100000));
+        String sessionDir = dir + "/sessions";
+        String sessionLogPath = sessionDir + "/" + sessionId + ".log";
         String agentPath = dir + "/oracle_rescue_agent.py";
         String requestPath = "/tmp/oracle_ai_rescue_request_" + System.currentTimeMillis() + ".json";
 
         ui.post(() -> setStatus("正在安裝/更新 Oracle Rescue Agent…"));
-        ssh.runCommand("mkdir -p " + DiagnosticCommands.shellQuote(dir) + " && chmod 700 " + DiagnosticCommands.shellQuote(dir), 30000);
+        ssh.runCommand("mkdir -p " + DiagnosticCommands.shellQuote(dir) + " " + DiagnosticCommands.shellQuote(sessionDir) + " && chmod 700 " + DiagnosticCommands.shellQuote(dir) + " " + DiagnosticCommands.shellQuote(sessionDir), 30000);
         ssh.uploadText(agentPath, readAssetText("oracle_rescue_agent.py"), 0700);
 
         org.json.JSONObject request = buildRescueAgentRequest(userText);
+        request.put("session_id", sessionId);
+        request.put("session_log_path", sessionLogPath);
+        request.put("session_dir", sessionDir);
+        request.put("runtime_mode", "cloud-agent-runtime-only");
         ssh.uploadText(requestPath, request.toString(), 0600);
 
-        ui.post(() -> setStatus("Oracle Rescue Agent 正在本機呼叫 LLM 並操作工具…"));
-        String cmd = "python3 " + DiagnosticCommands.shellQuote(agentPath) + " --request " + DiagnosticCommands.shellQuote(requestPath)
-            + "; RC=$?; rm -f " + DiagnosticCommands.shellQuote(requestPath) + "; exit $RC";
-        CommandResult r = ssh.runCommand(cmd, 900000);
-        String out = maskSensitive(r.asText());
-        appLog("ORACLE RESCUE AGENT｜exit=" + r.exitCode + "｜timedOut=" + r.timedOut + "｜長度=" + out.length());
-        store.appendHistory(new RepairHistory(now(), "Oracle Rescue Agent", out));
-        if (r.exitCode != 0 || r.timedOut) {
-            return "Oracle Rescue Agent 執行失敗或逾時。\n\n```text\n" + limit(out, 30000) + "\n```";
+        ui.post(() -> setStatus("Oracle Rescue Agent 正在雲端 Runtime 執行…"));
+        String script = "set +e\n"
+            + "SESSION_ID=" + DiagnosticCommands.shellQuote(sessionId) + "\n"
+            + "LOG=" + DiagnosticCommands.shellQuote(sessionLogPath) + "\n"
+            + "mkdir -p " + DiagnosticCommands.shellQuote(sessionDir) + "\n"
+            + "echo '__ORACLE_AI_RESCUE_START__ session='${SESSION_ID}' time='$(date -Is) | tee -a \"$LOG\"\n"
+            + "python3 -u " + DiagnosticCommands.shellQuote(agentPath) + " --request " + DiagnosticCommands.shellQuote(requestPath) + " 2>&1 | tee -a \"$LOG\"\n"
+            + "RC=${PIPESTATUS[0]}\n"
+            + "echo '__ORACLE_AI_RESCUE_RC__='${RC} | tee -a \"$LOG\"\n"
+            + "rm -f " + DiagnosticCommands.shellQuote(requestPath) + "\n"
+            + "echo '__ORACLE_AI_RESCUE_END__ session='${SESSION_ID}' time='$(date -Is) | tee -a \"$LOG\"\n"
+            + "exit ${RC}\n";
+        String cmd = "bash -lc " + DiagnosticCommands.shellQuote(script);
+        CommandResult r = ssh.runCommand(cmd, 1200000);
+        int effectiveExit = parseRemoteSentinelExit(r.stdout, r.exitCode);
+        String cleanedStdout = cleanRemoteSentinel(r.stdout);
+
+        String sessionLog = "";
+        try {
+            CommandResult lr = ssh.runCommand("test -f " + DiagnosticCommands.shellQuote(sessionLogPath) + " && tail -c 120000 " + DiagnosticCommands.shellQuote(sessionLogPath) + " || echo 'session log missing'", 60000);
+            sessionLog = lr.stdout == null ? "" : lr.stdout;
+        } catch (Exception e) {
+            sessionLog = "讀取 session log 失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage();
         }
-        return r.stdout == null || r.stdout.trim().isEmpty() ? out : maskSensitive(r.stdout.trim());
+
+        String diagnostic = "";
+        if (effectiveExit != 0 || r.timedOut || cleanedStdout.trim().isEmpty()) {
+            try {
+                CommandResult dr = ssh.runCommand("set +e; echo '==== agent files ===='; ls -la " + DiagnosticCommands.shellQuote(dir) + " " + DiagnosticCommands.shellQuote(sessionDir) + " 2>&1 | tail -n 120; echo '==== python ===='; command -v python3; python3 --version 2>&1; echo '==== last sessions ===='; ls -lt " + DiagnosticCommands.shellQuote(sessionDir) + " 2>/dev/null | head -n 20", 60000);
+                diagnostic = dr.asText();
+            } catch (Exception e) {
+                diagnostic = "讀取 Agent 診斷失敗：" + e.getClass().getSimpleName() + "：" + e.getMessage();
+            }
+        }
+
+        StringBuilder full = new StringBuilder();
+        full.append("sessionId=").append(sessionId).append("\n");
+        full.append("sessionLog=").append(sessionLogPath).append("\n");
+        full.append(new CommandResult(r.command, effectiveExit, cleanedStdout, r.stderr, r.timedOut).asText());
+        if (sessionLog != null && sessionLog.trim().length() > 0 && !sessionLog.trim().equals(cleanedStdout.trim())) {
+            full.append("\n--- session log tail ---\n").append(sessionLog);
+        }
+        if (diagnostic != null && diagnostic.trim().length() > 0) {
+            full.append("\n--- agent diagnostic ---\n").append(diagnostic);
+        }
+        String out = maskSensitive(full.toString());
+        appLog("ORACLE RESCUE AGENT｜session=" + sessionId + "｜exit=" + effectiveExit + "｜rawExit=" + r.exitCode + "｜timedOut=" + r.timedOut + "｜長度=" + out.length());
+        store.appendHistory(new RepairHistory(now(), "Oracle Rescue Agent", out));
+        if (effectiveExit != 0 || r.timedOut) {
+            return "Oracle Rescue Agent 執行失敗或逾時。\n\n"
+                + "這版已保留雲端 session log，請直接匯出報告，我可以依據 sessionId / sessionLog 修正。\n\n"
+                + "```text\n" + limit(out, 50000) + "\n```";
+        }
+        return cleanedStdout == null || cleanedStdout.trim().isEmpty() ? out : maskSensitive(cleanedStdout.trim());
+    }
+
+    private int parseRemoteSentinelExit(String stdout, int rawExit) {
+        if (stdout == null) return rawExit;
+        Matcher m = Pattern.compile("(?m)^__ORACLE_AI_RESCUE_RC__=([0-9]+)\\s*$").matcher(stdout);
+        if (m.find()) {
+            try { return Integer.parseInt(m.group(1)); } catch (Exception ignored) {}
+        }
+        return rawExit;
+    }
+
+    private String cleanRemoteSentinel(String stdout) {
+        if (stdout == null) return "";
+        return stdout
+            .replaceAll("(?m)^__ORACLE_AI_RESCUE_START__.*$\\n?", "")
+            .replaceAll("(?m)^__ORACLE_AI_RESCUE_RC__=[0-9]+\\s*$\\n?", "")
+            .replaceAll("(?m)^__ORACLE_AI_RESCUE_END__.*$\\n?", "")
+            .trim();
     }
 
     private String remoteRescueAgentDir() {
@@ -428,14 +503,14 @@ public class MainActivity extends Activity {
 
     private org.json.JSONObject buildRescueAgentRequest(String userText) throws Exception {
         org.json.JSONObject root = new org.json.JSONObject();
-        root.put("version", "2.0.8");
+        root.put("version", "2.1.0");
         root.put("question", userText);
         root.put("system_prompt", runtimeConfig == null ? "" : runtimeConfig.systemPrompt);
         root.put("max_steps", 12);
         root.put("tool_model_timeout_seconds", 300);
         root.put("repair_model_timeout_seconds", 300);
         root.put("verifier_timeout_seconds", 300);
-        // v2.0.8 規則：
+        // v2.1.0 規則：
         // NVIDIA NIM 是公共平台；主模型與 31B 驗證模型每次 API 回覆等待最多 300 秒。
         // 超過 300 秒才視為 timeout；主模型 timeout 仍直接報錯，不使用備援。
         // v2.0.2 規則：
@@ -568,7 +643,7 @@ public class MainActivity extends Activity {
                 + observation));
         }
 
-        return "Oracle SSH 橋接已達 8 步工具上限。以下是已取得的工具結果：\n\n```text\n"
+        return "Oracle SSH 橋接已達 12 步工具上限。以下是已取得的工具結果：\n\n```text\n"
             + compactForModel(observations.toString(), 18000) + "\n```\n\n最後一次模型輸出：\n" + lastModelText;
     }
 
@@ -809,7 +884,7 @@ public class MainActivity extends Activity {
         StringBuilder sh = new StringBuilder();
         sh.append("set +e\n");
         sh.append("QUERY=").append(DiagnosticCommands.shellQuote(q)).append("\n");
-        sh.append("echo '==== DISCOVER_PROJECTS v2.0.8 ===='\n");
+        sh.append("echo '==== DISCOVER_PROJECTS v2.1.0 ===='\n");
         sh.append("echo \"query=$QUERY\"\n");
         sh.append("echo '==== candidate project dirs ===='\n");
         sh.append("for ROOT in /home/ubuntu /home/ubuntu/ai-agents /home/ubuntu/.config /home/ubuntu/_runtime /home/ubuntu/projects /home/ubuntu/apps /opt /srv /var/www /usr/local; do\n");
@@ -845,7 +920,7 @@ public class MainActivity extends Activity {
             return sh.toString();
         }
         sh.append("P=").append(DiagnosticCommands.shellQuote(p)).append("\n");
-        sh.append("echo '==== RESOLVE_PROJECT_IDENTITY v2.0.8 ===='\n");
+        sh.append("echo '==== RESOLVE_PROJECT_IDENTITY v2.1.0 ===='\n");
         sh.append("echo \"query=$QUERY\"; echo \"path=$P\"\n");
         sh.append("echo '==== metadata ===='; ls -la \"$P\" 2>/dev/null | head -n 120 || true\n");
         sh.append("echo '==== git remote ===='; (cd \"$P\" 2>/dev/null && git remote -v 2>/dev/null && git status --short 2>/dev/null | head -n 80) || true\n");
@@ -2014,7 +2089,7 @@ public class MainActivity extends Activity {
 
     private void showRepairPage() {
         LinearLayout box = page("維修");
-        addSection(box, "Oracle Rescue Agent v2.0");
+        addSection(box, "Oracle Rescue Agent v2.1");
         box.addView(label("這是雲端本機 Agent 架構：App 只透過 SSH 安裝/啟動 Agent；LLM 在 Oracle 主機內直接調用本機工具、讀檔、修檔、測試、31B 驗證與回滾。", 14, false));
         Button installAgent = button("安裝/更新 Oracle Rescue Agent 到雲端");
         installAgent.setOnClickListener(v -> runTask("正在安裝/更新 Oracle Rescue Agent…", () -> {
@@ -2028,7 +2103,7 @@ public class MainActivity extends Activity {
 
         Button testAgent = button("測試 Oracle Rescue Agent：只詢問目前目錄與主機");
         testAgent.setOnClickListener(v -> runTask("正在測試 Oracle Rescue Agent…", () -> {
-            String out = runOracleRescueAgent("請只用 ssh_exec 執行 pwd && whoami && hostname，然後 final 回答結果");
+            String out = runOracleMaintenanceAgent("請只用 ssh_exec 執行 pwd && whoami && hostname，然後 final 回答結果");
             ui.post(() -> showTextDialog("Oracle Rescue Agent 測試結果", out));
         }));
         box.addView(testAgent);
@@ -2503,7 +2578,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v2.0.6\n");
+        sb.append("- App 版本：v").append(BuildConfig.VERSION_NAME).append("\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");
@@ -2543,7 +2618,7 @@ public class MainActivity extends Activity {
             for (RepairHistory h : history) {
                 if (count++ >= 10) break;
                 sb.append("### ").append(h.timestamp).append("｜").append(h.title).append("\n\n```text\n");
-                sb.append(limit(h.content, 8000)).append("\n```\n\n");
+                sb.append(limit(h.content, 30000)).append("\n```\n\n");
             }
         }
 

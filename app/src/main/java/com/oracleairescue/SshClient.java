@@ -108,6 +108,26 @@ class SshClient {
                 if (System.currentTimeMillis() > deadline) { timedOut = true; break; }
                 Thread.sleep(100);
             }
+
+            // JSch 有時 channel 已關閉但 exit-status 尚未送到，會短暫回傳 -1。
+            // 多等一小段時間並把關閉後殘留 stdout 讀完，避免 LOG 只剩 exit=-1 而沒有真正錯誤。
+            if (!timedOut) {
+                long exitDeadline = System.currentTimeMillis() + 3000;
+                while (channel.getExitStatus() == -1 && System.currentTimeMillis() < exitDeadline) {
+                    while (in.available() > 0) {
+                        int n = in.read(buf, 0, buf.length);
+                        if (n < 0) break;
+                        out.write(buf, 0, n);
+                    }
+                    Thread.sleep(100);
+                }
+            }
+            while (in.available() > 0) {
+                int n = in.read(buf, 0, buf.length);
+                if (n < 0) break;
+                out.write(buf, 0, n);
+            }
+
             int exit = timedOut ? -1 : channel.getExitStatus();
             if (timedOut) try { channel.disconnect(); } catch (Exception ignored) {}
             return new CommandResult(command, exit,

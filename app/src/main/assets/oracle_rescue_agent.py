@@ -1,16 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.0.8
+"""Oracle AI Rescue Agent v2.1.0
 Runs on the Oracle host. The Android app is only a remote controller/bridge.
 Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
 Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
 Full authority mode: the LLM may execute shell commands, remove projects, stop services, kill processes, and use sudo -n.
 No password prompt is used or requested. If sudo -n is unavailable, the command will fail and report the real permission error.
 """
-import argparse, base64, difflib, json, os, re, shlex, subprocess, sys, time, urllib.request, urllib.error
+import argparse, base64, difflib, json, os, re, shlex, subprocess, sys, time, traceback, urllib.request, urllib.error
 from pathlib import Path
 
 MAX_OBS = 12000
+SESSION_LOG_PATH = None
+
+
+def log_event(message):
+    line = f"[oracle_rescue_agent] {now()} {message}"
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
+    try:
+        if SESSION_LOG_PATH:
+            Path(SESSION_LOG_PATH).parent.mkdir(parents=True, exist_ok=True)
+            with open(SESSION_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except Exception:
+        pass
 
 
 def limit(text, n):
@@ -48,16 +64,25 @@ def chat_once(cfg, messages, timeout=300):
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Authorization", "Bearer " + key)
+    t0 = time.time()
+    log_event(f"LLM_CALL_START provider={provider} model={model} timeout={timeout}s messages={len(messages)}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", "replace")
     except TimeoutError as e:
+        log_event(f"LLM_CALL_TIMEOUT provider={provider} model={model} elapsed={time.time()-t0:.1f}s")
         raise TimeoutError(f"LLM API read timed out after {timeout}s; provider={provider}; model={model}; base={base}; note=NVIDIA_NIM_large_models_may_need_up_to_300s") from e
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace") if e.fp else ""
+        log_event(f"LLM_CALL_HTTP_ERROR provider={provider} model={model} code={e.code} elapsed={time.time()-t0:.1f}s body_head={limit(body, 500)}")
         raise RuntimeError(f"LLM API HTTP {e.code}; provider={provider}; model={model}; body={limit(body, 3000)}") from e
+    except Exception as e:
+        log_event(f"LLM_CALL_ERROR provider={provider} model={model} error={type(e).__name__}: {e} elapsed={time.time()-t0:.1f}s")
+        raise
     root = json.loads(body)
-    return root["choices"][0]["message"].get("content", "")
+    content = root["choices"][0]["message"].get("content", "")
+    log_event(f"LLM_CALL_OK provider={provider} model={model} elapsed={time.time()-t0:.1f}s content_length={len(content or '')}")
+    return content
 
 
 def chat_chain(models, messages, timeout=300):
@@ -781,14 +806,18 @@ def main():
     ap.add_argument("--request", required=True)
     ns = ap.parse_args()
     req = json.loads(Path(ns.request).read_text(encoding="utf-8"))
+    global SESSION_LOG_PATH
+    SESSION_LOG_PATH = req.get("session_log_path") or str(Path.home() / ".oracle_ai_rescue" / "sessions" / ((req.get("session_id") or ("session_" + time.strftime("%Y%m%d_%H%M%S"))) + ".log"))
+    log_event("SESSION_START version=2.1.0 mode=" + str(req.get("runtime_mode") or "cloud-agent-runtime") + " session_id=" + str(req.get("session_id") or ""))
     question = req.get("question") or ""
     main_model = req.get("main_model") or {}
     models = [main_model] if main_model and (main_model.get("api_key") or "").strip() else []
-    # v2.0.8：主模型嚴禁備援；NVIDIA NIM / 大模型每次 API 回覆等待最多 300 秒，超過才報錯。
+    # v2.1.0：主模型嚴禁備援；NVIDIA NIM / 大模型每次 API 回覆等待最多 300 秒，超過才報錯。
     # 加入自主規劃、Project Discovery、工具一致性檢查，不增加主模型備援。
     # 一般檢修、工具判斷、讀檔分析、產生修正版，都只允許使用 main_model。
     # req.fallback_models 即使存在也會被忽略；備援只允許在 verify_with_31b() 後段驗證內使用。
     if not models:
+        log_event("MAIN_MODEL_MISSING api_key_or_config_empty")
         print("# Oracle Rescue Agent 失敗\n\n主模型沒有可用 LLM API Key。主模型不使用備援；請修正目前選定模型的 API Key / Base URL / 模型名稱。")
         return 2
     agent_constitution = """
@@ -830,6 +859,7 @@ def main():
     transcript = []
     used_models = []
     for step in range(1, int(req.get("max_steps", 10))+1):
+        print(f"[oracle_rescue_agent] step={step} calling main model...", flush=True)
         try:
             text, used, errs = chat_chain(models, messages, timeout=int(req.get("tool_model_timeout_seconds", 300)))
             used_models.append(used)
@@ -879,7 +909,10 @@ def main():
             if used_models:
                 print("\n---\n使用模型：" + ", ".join(dict.fromkeys(used_models)))
             return 0
+        print(f"[oracle_rescue_agent] step={step} executing tool={obj.get('tool')}", flush=True)
+        log_event(f"TOOL_START step={step} tool={obj.get('tool')}")
         res = execute_tool(req, models, obj)
+        log_event(f"TOOL_END step={step} tool={obj.get('tool')} ok={res.get('ok')} output_length={len(str(res.get('output') or ''))}")
         obs = limit(res.get("output"), MAX_OBS)
         transcript.append(f"STEP {step} TOOL {obj.get('tool')} ok={res.get('ok')}\n{obs}")
         messages.append({"role":"assistant", "content":json.dumps(obj, ensure_ascii=False)})
@@ -891,4 +924,14 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as e:
+        print("# Oracle Rescue Agent 未捕捉例外", flush=True)
+        print(f"{type(e).__name__}: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        try:
+            log_event("UNCAUGHT_EXCEPTION " + type(e).__name__ + ": " + str(e))
+        except Exception:
+            pass
+        sys.exit(99)

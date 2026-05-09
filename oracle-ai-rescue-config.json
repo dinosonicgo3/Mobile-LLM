@@ -1,5 +1,5 @@
 {
-  "version": "v2.0.8-agent-constitution-alignment",
+  "version": "v2.1.0-cloud-agent-runtime-stable-log",
   "systemPrompt": "你是成熟穩定的 Oracle Cloud 程式維護 Agent，不是一般聊天機器人。你的核心目標是用 LLM API 協助使用者修改、維護、除錯 Oracle 雲端上的程式與服務。必須先規劃、主動查證目前雲端真實環境、遵循使用者指令、基於證據提出優化方案，且不可幻覺。工具結果高於模型推測；涉及專案/檔案/服務/流程查找、維修、刪除、更新、重啟、log 檢查時，必須先自主搜尋最新正確候選，再確認身份。修改檔案必須保留備份、測試、31B 後段驗證與失敗回滾。主模型不備援；後段驗證可以備援。需要 root 權限只用 sudo -n。",
   "extraDiagnosticCommands": [
     "date",
@@ -34,7 +34,7 @@
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "v2.0.8 將程式維護 AI 規範對齊：手機端預設提示詞、Oracle Rescue Agent 系統規範、橋接工具提示、最終輸出靜態防幻覺檢查皆加入「先規劃、主動查證、工具結果優先、無幻覺、備份測試驗證回滾」。",
+    "fix": "v2.1.0 將程式維護 AI 規範對齊：手機端預設提示詞、Oracle Rescue Agent 系統規範、橋接工具提示、最終輸出靜態防幻覺檢查皆加入「先規劃、主動查證、工具結果優先、無幻覺、備份測試驗證回滾」。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {
@@ -91,7 +91,7 @@
       "repair_file",
       "final"
     ],
-    "safety": "v2.0.8 規範對齊：完整權限 + 自主專案發現 + 維修前規劃 + 靜態防幻覺守門 + 31B 最終一致性驗證；模型不得跳過工具查證直接 final。"
+    "safety": "v2.1.0 規範對齊：完整權限 + 自主專案發現 + 維修前規劃 + 靜態防幻覺守門 + 31B 最終一致性驗證；模型不得跳過工具查證直接 final。"
   },
   "repairVerification": {
     "enabled": true,
@@ -126,7 +126,7 @@
       "repair_file",
       "final"
     ],
-    "safety": "v2.0.8 對齊成熟編程 Agent 規範：任何維護任務先規劃與查證；工具結果高於模型推測；修檔 backup → write → test → 31B verify → rollback；最終回答前執行靜態防幻覺守門與 31B 一致性檢查。"
+    "safety": "v2.1.0 對齊成熟編程 Agent 規範：任何維護任務先規劃與查證；工具結果高於模型推測；修檔 backup → write → test → 31B verify → rollback；最終回答前執行靜態防幻覺守門與 31B 一致性檢查。"
   },
   "modelPolicy": {
     "mainModelFallback": "disabled",
@@ -169,7 +169,7 @@
   },
   "programmingAgentConstitution": {
     "enabled": true,
-    "version": "v2.0.8",
+    "version": "v2.1.0",
     "principles": [
       "編程穩定",
       "動手前先規劃",
@@ -183,5 +183,11 @@
       "sudo -n 不要求密碼"
     ],
     "finalGuard": "maintenance tasks cannot final without tool evidence; negative/completion claims must match transcript; 31B verifier still runs after static guard"
-  }
+  },
+  "release_notes": [
+    "v2.1.0：正式採用雲端 Oracle Rescue Agent Runtime 單一路徑；App 僅負責部署、啟動、讀取 session log，不再使用 App 直連 SSH 雙主流程。新增 session_id、session log、LLM call start/ok/error、tool start/end、crash traceback 與失敗診斷留存。"
+  ],
+  "cloud_agent_runtime": "primary_only",
+  "direct_ssh_bridge": "disabled_as_main_flow",
+  "session_logging": "enabled: ~/.oracle_ai_rescue/sessions/<session_id>.log"
 }

@@ -1,0 +1,1 @@
+v2.1.0：正式採用雲端 Oracle Rescue Agent Runtime 單一路徑。App 不再把直連 SSH 橋接當第二套主流程；SSH 僅負責部署、啟動、讀取 session log。新增 session_id、~/.oracle_ai_rescue/sessions/*.log、LLM 呼叫開始/成功/錯誤、工具開始/結束、未捕捉例外 traceback、失敗診斷與報告留存擴充。

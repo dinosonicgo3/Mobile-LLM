@@ -2,6 +2,22 @@
 
 這是一個手機端 Android 救援 App 專案。它不需要 Oracle Cloud 上的 AI 正常運作；手機 App 會直接呼叫外部 LLM API，並透過 SSH 連到 Oracle Cloud 讀取 log、診斷問題、產生修復建議、讀取/修改檔案。
 
+## v2.1.0 雲端 Agent Runtime 穩定核心與 LOG 留存版
+
+本版正式採用「雲端 Oracle Rescue Agent Runtime」作為單一主流程：手機 App 只負責部署、啟動、等待與讀取結果，不再把 App 直連 SSH 工具橋接作為第二套主 Agent。這能避免雙路徑導致規範不一致與除錯混亂。
+
+重點修正：
+
+- 每次任務建立 `session_id`。
+- 雲端主機保留 `~/.oracle_ai_rescue/sessions/<session_id>.log`。
+- App 啟動 Agent 時使用 `python3 -u`，並把 stdout/stderr 透過 `tee` 寫入 session log。
+- Agent 內部記錄 LLM API 呼叫開始、成功、HTTP 錯誤、timeout、工具開始、工具結束、未捕捉例外 traceback。
+- 即使 SSH channel 回傳 `exit=-1` 或 stdout 空白，App 也會再讀 session log 與 Agent 診斷資訊。
+- 匯出報告中的最近維修紀錄留存量加大，方便依據 LOG 精準修復。
+
+保留規則：主模型不備援、NVIDIA NIM 等待 300 秒、後段 31B 可備援、完整權限、`sudo -n`、備份 → 測試 → 31B 驗證 → 失敗回滾。
+
+
 ## 版本
 
 v1.3.5 Java 原生版。此版加入 Kaggle Qwen 動態端點同步：App 可從 GitHub 的 oracle-ai-rescue-config.json 讀取 Kaggle 隧道網址，不需要使用者手動知道 ngrok/cloudflared URL。固定簽章仍保留，之後新版 APK 可直接覆蓋安裝並保留 App 內資料。
@@ -875,3 +891,12 @@ NVIDIA NIM Gemma 4 31B
 - 保留主模型不備援：主模型超過 300 秒或 API 失敗仍直接報錯。
 - 保留 31B 後段驗證備援：Google Gemma 4 31B 失敗後可改用 NVIDIA NIM Gemma 4 31B。
 - 保留 v2.0.6 自主規劃、Project Discovery、工具一致性檢查與完整權限。
+
+
+## v2.0.9 雲端 Agent 與直連 SSH 雙路徑修正版
+
+- 修正 Oracle Rescue Agent 可能只回報 `exit=-1` 且沒有 stdout/stderr 的問題。
+- 雲端 Agent 啟動改為 `python3 -u`，並加入 start / RC / end sentinel，App 可解析真正遠端 exit code。
+- App 端 SSH 等待 channel exit-status，避免 JSch 短暫回傳 `-1` 導致誤判。
+- 若雲端 Agent 執行不完整，App 會自動切換到 App 直連 SSH 工具橋接；仍使用使用者選定主模型，不增加主模型備援。
+- 修正 LOG 回報 App 版本硬編碼問題，改用 BuildConfig.VERSION_NAME。
