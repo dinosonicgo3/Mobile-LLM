@@ -649,3 +649,21 @@ google/gemma-4-31b-it
   - `google/gemma-4-31b-it`
 - Google 31B 失敗時，App 會用此 NIM 模型做備援後段驗證
 - Google / NIM 都失敗時，仍判定後段驗證失敗並阻擋自動寫回或保留修復
+
+
+## v1.6.6 編譯錯誤修正
+
+修正 Release 打包失敗：
+
+```text
+MainActivity.java:2122: error: unclosed string literal
+sb.append("- App 版本：v1.6.0
+```
+
+原因：LOG 報告中的 App 版本字串被錯誤替換成真實換行，Java 字串沒有關閉。
+
+已修正為：
+
+```java
+sb.append("- App 版本：v1.6.6\n");
+```
