@@ -1,6 +1,6 @@
 {
-  "version": "v2.3.0-cloud-local-terminal-runtime",
-  "systemPrompt": "你是成熟穩定的 Oracle Cloud 程式維護 Agent。你在 Oracle 主機本機 Runtime 執行，模型只使用單一 run_terminal_command 雲端本機終端工具；不要預設目前有哪些專案，每次任務先用工具查證當下環境。工具結果高於模型推測；主模型不備援；後段驗證可備援。修改/刪除前先確認目標並備份，root 權限只能 sudo -n，不要求密碼。",
+  "version": "v2.3.1-cloud-local-terminal-runtime",
+  "systemPrompt": "你是成熟穩定的 Oracle Cloud 程式維護 Agent。你在 Oracle 主機本機 Runtime 執行，模型只使用單一 run_terminal_command 雲端本機終端工具；移除串流失敗後再等 300 秒的慢速 fallback，工具結果只回填小觀測值；不要預設目前有哪些專案，每次任務先用工具查證當下環境。工具結果高於模型推測；主模型不備援；後段驗證可備援。修改/刪除前先確認目標並備份，root 權限只能 sudo -n，不要求密碼。",
   "extraDiagnosticCommands": [
     "date",
     "whoami",
@@ -34,7 +34,7 @@
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "v2.3.0 保留雲端 Agent Runtime 主架構，但學習 Gemini 化繁為簡：模型只看到單一 run_terminal_command 雲端本機終端工具，不暴露多工具清單、不寫死專案清單。每次任務由模型先透過工具查證當下 Oracle 環境，再進行維護、修程式、測試或清理。",
+    "fix": "v2.3.1 保留雲端 Agent Runtime 主架構，但學習 Gemini 化繁為簡：模型只看到單一 run_terminal_command 雲端本機終端工具；移除串流失敗後再等 300 秒的慢速 fallback，工具結果只回填小觀測值，不暴露多工具清單、不寫死專案清單。每次任務由模型先透過工具查證當下 Oracle 環境，再進行維護、修程式、測試或清理。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {
@@ -77,8 +77,8 @@
     "tools": [
       "run_terminal_command"
     ],
-    "safety": "v2.3.0：雲端 Agent Runtime + 單一 run_terminal_command 本機終端工具。模型仍自行決定工具怎麼用，但只需決定 shell 指令；不提供固定專案清單，每次先查證當下環境。修改/刪除前備份，sudo 只用 sudo -n。",
-    "version": "v2.3.0",
+    "safety": "v2.3.1：雲端 Agent Runtime + 單一 run_terminal_command 本機終端工具。模型仍自行決定工具怎麼用，但只需決定 shell 指令；不提供固定專案清單，每次先查證當下環境。修改/刪除前備份，sudo 只用 sudo -n。",
+    "version": "v2.3.1",
     "nativeTools": "enabled_single_terminal_tool",
     "streamingToolCalls": "enabled",
     "legacyJsonToolFallback": "compatibility_only"
@@ -107,7 +107,7 @@
     "tools": [
       "run_terminal_command"
     ],
-    "safety": "v2.3.0：使用單一 run_terminal_command 雲端本機終端工具循環；模型每次先查證當下環境，不依賴固定專案清單。工具結果高於推測，修改/刪除前備份，修檔仍需測試與後段驗證。"
+    "safety": "v2.3.1：使用單一 run_terminal_command 雲端本機終端工具；移除串流失敗後再等 300 秒的慢速 fallback，工具結果只回填小觀測值循環；模型每次先查證當下環境，不依賴固定專案清單。工具結果高於推測，修改/刪除前備份，修檔仍需測試與後段驗證。"
   },
   "modelPolicy": {
     "mainModelFallback": "disabled",
@@ -150,7 +150,7 @@
   },
   "programmingAgentConstitution": {
     "enabled": true,
-    "version": "v2.3.0",
+    "version": "v2.3.1",
     "principles": [
       "編程穩定",
       "動手前先規劃",
@@ -166,12 +166,12 @@
     "finalGuard": "single cloud-local terminal tool loop + static guard; mutating repairs still require backup/test/31B verification."
   },
   "release_notes": [
-    "v2.3.0：保留雲端 Runtime，但化繁為簡成單一 run_terminal_command 本機終端工具；不寫死專案清單，每次由模型先查證當下 Oracle 環境，再維護。"
+    "v2.3.1：保留雲端 Runtime，但化繁為簡成單一 run_terminal_command 本機終端工具；不寫死專案清單，每次由模型先查證當下 Oracle 環境，再維護。"
   ],
   "cloud_agent_runtime": "primary_only",
   "direct_ssh_bridge": "disabled_as_main_flow",
   "session_logging": "enabled: ~/.oracle_ai_rescue/sessions/<session_id>.log",
   "releaseNotes": [
-    "v2.3.0：修正前版把 Gemini 的 SSH 架構語意直接套入雲端 Runtime 的問題；改成雲端本機終端工具，模型不用讀多工具 schema，也不被告知固定專案狀態。"
+    "v2.3.1：修正前版把 Gemini 的 SSH 架構語意直接套入雲端 Runtime 的問題；改成雲端本機終端工具，模型不用讀多工具 schema，也不被告知固定專案狀態。"
   ]
 }

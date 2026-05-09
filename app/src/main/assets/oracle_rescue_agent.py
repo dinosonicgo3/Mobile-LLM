@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.3.0
+"""Oracle AI Rescue Agent v2.3.1
 Runs on the Oracle host. The Android app is only a remote controller/bridge.
 Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
 Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
@@ -10,7 +10,8 @@ No password prompt is used or requested. If sudo -n is unavailable, the command 
 import argparse, base64, difflib, json, os, re, shlex, subprocess, sys, time, traceback, urllib.request, urllib.error
 from pathlib import Path
 
-MAX_OBS = 12000
+MAX_OBS = 6000
+TOOL_CONTEXT_LIMIT = 4000
 SESSION_LOG_PATH = None
 
 
@@ -785,7 +786,12 @@ def execute_tool(req, models, tool_obj):
     if tool == "resolve_project_identity":
         return resolve_project_identity(args.get("query") or req.get("question") or "", args.get("paths"))
     if tool in ("ssh_exec", "shell_exec", "run_ssh_command", "run_terminal_command", "terminal_exec"):
-        return run_full(args.get("command") or "", timeout=300)
+        try:
+            t = int(args.get("timeout_seconds") or 30)
+        except Exception:
+            t = 30
+        t = max(5, min(300, t))
+        return run_full(args.get("command") or "", timeout=t)
     if tool == "remove_project":
         return remove_project(args.get("target") or "", args.get("paths"))
     if tool == "read_file":
@@ -803,48 +809,44 @@ def execute_tool(req, models, tool_obj):
 
 
 # =========================
-# v2.3.0 cloud-local terminal runtime tool loop
+# v2.3.1 cloud-local terminal runtime tool loop
 # =========================
 
 def tool_schemas():
-    """Single cloud-local terminal tool.
+    """Exactly one Gemini-style terminal tool.
 
-    This is intentionally one generic terminal tool, not a hardcoded project
-    tool and not a long list of special-case tools.  The model decides which
-    shell commands to run, but the commands execute locally on the Oracle VM
-    where this Agent Runtime is already running.
+    Do not expose project-specific tools.  The model decides shell commands;
+    this runtime executes them locally on the Oracle VM.  Output returned to
+    the model is intentionally capped, matching the working Gemini version's
+    small observation style.
     """
     return [{
         "type": "function",
         "function": {
             "name": "run_terminal_command",
-            "description": "Execute a shell command locally on the current Oracle Cloud Ubuntu host. Use it to inspect the live environment, discover projects, read files/logs, edit code, run tests, control services, backup, cleanup and maintenance.",
+            "description": "Execute one shell command locally on the current Oracle Cloud Ubuntu host. Use this for live environment inspection, project discovery, reading logs/files, backups, edits, tests and service control. Keep commands focused and bounded.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Shell command to execute on this Oracle host"}
+                    "command": {"type": "string", "description": "Shell command to execute on this Oracle host"},
+                    "timeout_seconds": {"type": "integer", "description": "Optional command timeout, default 30, max 300"}
                 },
                 "required": ["command"]
             }
         }
     }]
 
-
 def build_runtime_system(req):
-    # v2.3.0：雲端本機 Runtime，不把目前專案清單寫死給模型。
-    # 模型只知道自己在 Oracle Cloud Ubuntu 主機本機，可用單一終端工具查證當下環境。
+    # Gemini-style, but cloud-local: short, operational, no fixed project list.
     return (
-        "你是 Oracle Cloud Ubuntu 主機上的程式維護 Agent，正在這台雲端主機本機執行。"
-        "你不能假設目前有哪些專案、檔案、服務或流程；它們會變動。"
-        "每次任務都要先用 run_terminal_command 查證當下真實環境，再根據工具結果行動。"
-        "run_terminal_command 會在目前 Oracle 主機本機 shell 執行指令，不是讓使用者手動操作。"
-        "請盡快呼叫工具；不要在未查證主機前長篇空談或憑記憶回答。"
-        "查專案、讀檔、查 log、查服務、查進程、修改程式、測試、刪除或清理，都使用同一個終端工具。"
-        "修改、覆寫、刪除、停止服務或殺進程前，要先用工具確認目標並建立備份或隔離。"
-        "需要 root 權限時只能使用 sudo -n；不可要求使用者輸入 sudo 密碼。"
-        "最終回答只能根據已執行工具的結果；沒查證不可說已確認，沒測試不可說測試通過。"
+        "你是在 Oracle Cloud Ubuntu 主機本機執行的維護 Agent。"
+        "你不知道目前有哪些專案，因為環境會變動；必須用 run_terminal_command 查證。"
+        "你只有一個工具 run_terminal_command；請像終端機維修員一樣直接用它執行必要 shell 指令。"
+        "先用短指令檢查 pwd、whoami、hostname、常見目錄或目標關鍵字；不要一次輸出大量資料。"
+        "每次工具結果後繼續判斷下一步，直到完成任務。"
+        "修改、刪除、停止服務或殺進程前必須先確認目標並備份/隔離；root 權限只用 sudo -n。"
+        "最終回答只能根據工具結果；沒查證不可說已確認，沒測試不可說測試通過。"
     )
-
 
 def normalize_message_for_native(msg):
     """Keep OpenAI-compatible messages compact and valid."""
@@ -852,8 +854,8 @@ def normalize_message_for_native(msg):
     if role == "assistant" and msg.get("tool_calls"):
         return {"role":"assistant", "content": msg.get("content"), "tool_calls": msg.get("tool_calls")}
     if role == "tool":
-        return {"role":"tool", "tool_call_id": msg.get("tool_call_id"), "content": limit(msg.get("content") or "", 20000)}
-    return {"role": role, "content": limit(msg.get("content") or "", 30000)}
+        return {"role":"tool", "tool_call_id": msg.get("tool_call_id"), "content": limit(msg.get("content") or "", TOOL_CONTEXT_LIMIT)}
+    return {"role": role, "content": limit(msg.get("content") or "", 6000)}
 
 
 def openai_chat_completion(cfg, messages, timeout=300, tools=None, tool_choice="auto", stream=True, max_tokens=None):
@@ -984,19 +986,52 @@ def legacy_json_tool_call(cfg, messages, timeout=90):
 
 
 def call_main_for_tools(req, cfg, messages):
-    # Native terminal tool calls are the primary path. Keep prompt/schema minimal, Gemini-style.
+    # v2.3.1: one Gemini-style native streaming call only.
+    # Previous versions tried stream -> non-stream -> legacy fallback, causing one
+    # simple environment check to exceed 5-10 minutes.  Do not chain slow model calls.
     timeout = int(req.get("tool_model_timeout_seconds", 300))
-    try:
-        return openai_chat_completion(cfg, messages, timeout=timeout, tools=tool_schemas(), tool_choice="auto", stream=True, max_tokens=int(req.get("tool_router_max_tokens", 384))), "native-tools-stream"
-    except Exception as e1:
-        log_event("NATIVE_TOOL_STREAM_FAILED " + type(e1).__name__ + ": " + str(e1))
-        try:
-            return openai_chat_completion(cfg, messages, timeout=timeout, tools=tool_schemas(), tool_choice="auto", stream=False, max_tokens=int(req.get("tool_router_max_tokens", 384))), "native-tools"
-        except Exception as e2:
-            log_event("NATIVE_TOOL_NONSTREAM_FAILED " + type(e2).__name__ + ": " + str(e2))
-            # Compatibility path: only for models/endpoints that reject tools.
-            return legacy_json_tool_call(cfg, messages, timeout=min(timeout, int(req.get("legacy_tool_router_timeout_seconds", 120)))), "legacy-json-tools"
+    return openai_chat_completion(
+        cfg, messages, timeout=timeout, tools=tool_schemas(), tool_choice="auto",
+        stream=True, max_tokens=int(req.get("tool_router_max_tokens", 512))
+    ), "native-single-terminal-stream"
 
+
+def extract_textual_terminal_tool(content):
+    """Handle models that print a tool block as text instead of native tool_calls.
+
+    This is not a separate workflow; it converts the same single terminal tool
+    into a native-looking tool call so the loop can execute it.
+    """
+    text = content or ""
+    if "run_terminal_command" not in text and "run_ssh_command" not in text:
+        return []
+    # Try JSON object first.
+    m = re.search(r"\{[^{}]*(?:run_terminal_command|run_ssh_command)[\s\S]*?\}", text)
+    command = ""
+    timeout_seconds = 30
+    if m:
+        raw = m.group(0)
+        try:
+            obj = json.loads(raw)
+            args = obj.get("args") or obj.get("arguments") or obj
+            command = args.get("command") or ""
+            timeout_seconds = int(args.get("timeout_seconds") or 30)
+        except Exception:
+            pass
+    if not command:
+        # Support the Gemini-ish debug text: --command "..." or command: ...
+        m = re.search(r"--command\s+([\'\"])(.*?)\1", text, re.S)
+        if not m:
+            m = re.search(r"command\s*[:=]\s*([\'\"])(.*?)\1", text, re.S)
+        if m:
+            command = m.group(2).strip()
+    if not command:
+        return []
+    return [{
+        "id": f"textual_{int(time.time()*1000)}",
+        "type": "function",
+        "function": {"name": "run_terminal_command", "arguments": json.dumps({"command": command, "timeout_seconds": timeout_seconds}, ensure_ascii=False)}
+    }]
 
 def parse_tool_call(tc):
     fn = tc.get("function") or {}
@@ -1056,6 +1091,10 @@ def run_native_tool_loop(req, models):
             return 1
         tool_calls = resp.get("tool_calls") or []
         content = resp.get("content") or ""
+        if not tool_calls:
+            tool_calls = extract_textual_terminal_tool(content)
+            if tool_calls:
+                log_event("TEXTUAL_TOOL_CALL_CONVERTED count=" + str(len(tool_calls)))
         if tool_calls:
             assistant_msg = {"role":"assistant", "content": content or None, "tool_calls": tool_calls}
             messages.append(assistant_msg)
@@ -1068,10 +1107,12 @@ def run_native_tool_loop(req, models):
                 if is_mutating_tool(name, args):
                     mutating_used = True
                 res = execute_tool(req, models, obj)
-                out = limit(res.get("output"), MAX_OBS)
-                log_event(f"NATIVE_TOOL_END step={step} tool={name} ok={res.get('ok')} output_length={len(str(res.get('output') or ''))}")
+                raw_out = res.get("output")
+                out = limit(raw_out, MAX_OBS)
+                obs = limit(raw_out, TOOL_CONTEXT_LIMIT)
+                log_event(f"NATIVE_TOOL_END step={step} tool={name} ok={res.get('ok')} output_length={len(str(raw_out or ''))} context_length={len(obs)}")
                 transcript.append(f"STEP {step} TOOL {name} ok={res.get('ok')}\n{out}")
-                messages.append({"role":"tool", "tool_call_id": tc.get("id") or f"call_{step}", "name": name or "run_terminal_command", "content": out})
+                messages.append({"role":"tool", "tool_call_id": tc.get("id") or f"call_{step}", "name": name or "run_terminal_command", "content": obs})
             continue
         # No tool calls: treat content as final answer, guarded by static and risk-based 31B verification.
         answer = content.strip()
@@ -1121,14 +1162,14 @@ def main():
     req = json.loads(Path(ns.request).read_text(encoding="utf-8"))
     global SESSION_LOG_PATH
     SESSION_LOG_PATH = req.get("session_log_path") or str(Path.home() / ".oracle_ai_rescue" / "sessions" / ((req.get("session_id") or ("session_" + time.strftime("%Y%m%d_%H%M%S"))) + ".log"))
-    log_event("SESSION_START version=2.3.0 mode=" + str(req.get("runtime_mode") or "cloud-local-terminal-runtime") + " session_id=" + str(req.get("session_id") or ""))
+    log_event("SESSION_START version=2.3.1 mode=" + str(req.get("runtime_mode") or "cloud-local-terminal-runtime") + " session_id=" + str(req.get("session_id") or ""))
     main_model = req.get("main_model") or {}
     models = [main_model] if main_model and (main_model.get("api_key") or "").strip() else []
     if not models:
         log_event("MAIN_MODEL_MISSING api_key_or_config_empty")
         print("# Oracle Rescue Agent 失敗\n\n主模型沒有可用 LLM API Key。主模型不使用備援；請修正目前選定模型的 API Key / Base URL / 模型名稱。")
         return 2
-    # v2.3.0：統一使用單一 cloud-local run_terminal_command 工具循環。
+    # v2.3.1：統一使用單一 cloud-local run_terminal_command 工具循環。
     # 不做單項特例；查專案、修程式、讀檔、測試、刪除、服務控制都走同一套雲端本機終端工具循環。
     return run_native_tool_loop(req, models)
 
