@@ -1,0 +1,2 @@
+OracleAIRescue v2.1.1
+修正 GitHub Actions release 編譯錯誤：MainActivity.java 找不到 BuildConfig.VERSION_NAME。改用 PackageManager 讀取版本，並啟用 buildConfig。

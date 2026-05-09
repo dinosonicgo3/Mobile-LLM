@@ -81,6 +81,15 @@ public class MainActivity extends Activity {
 
     private final String[] providerLabels = new String[] {"Google Gemini", "NVIDIA NIM", "Kaggle Qwen / OpenAI 相容", "本機 Gemma 4", "自訂 OpenAI 相容"};
     private final String[] providerCodes = new String[] {"gemini", "nim", "kaggle", "local_gemma", "custom"};
+    private static final String APP_VERSION_FALLBACK = "2.1.1";
+
+    private String appVersionName() {
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            if (info != null && info.versionName != null && info.versionName.trim().length() > 0) return info.versionName;
+        } catch (Exception ignored) {}
+        return APP_VERSION_FALLBACK;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -96,7 +105,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v2.1.0｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v" + appVersionName() + "｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -139,7 +148,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v2.1.0");
+        title.setText("甲骨文雲端AI  v" + appVersionName());
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -376,7 +385,7 @@ public class MainActivity extends Activity {
     }
 
     private String runOracleMaintenanceAgent(String userText) throws Exception {
-        // v2.1.0 正式架構：單一主路徑採用雲端 Agent Runtime。
+        // v2.1.1 正式架構：單一主路徑採用雲端 Agent Runtime。
         // App 只負責部署、啟動、等待、讀取 session log 與顯示結果；
         // 不再把 App 直連 SSH 工具橋接作為第二套 Agent 主流程，避免雙路徑造成規範不一致與除錯混亂。
         return runOracleRescueAgent(userText);
@@ -503,14 +512,14 @@ public class MainActivity extends Activity {
 
     private org.json.JSONObject buildRescueAgentRequest(String userText) throws Exception {
         org.json.JSONObject root = new org.json.JSONObject();
-        root.put("version", "2.1.0");
+        root.put("version", "2.1.1");
         root.put("question", userText);
         root.put("system_prompt", runtimeConfig == null ? "" : runtimeConfig.systemPrompt);
         root.put("max_steps", 12);
         root.put("tool_model_timeout_seconds", 300);
         root.put("repair_model_timeout_seconds", 300);
         root.put("verifier_timeout_seconds", 300);
-        // v2.1.0 規則：
+        // v2.1.1 規則：
         // NVIDIA NIM 是公共平台；主模型與 31B 驗證模型每次 API 回覆等待最多 300 秒。
         // 超過 300 秒才視為 timeout；主模型 timeout 仍直接報錯，不使用備援。
         // v2.0.2 規則：
@@ -884,7 +893,7 @@ public class MainActivity extends Activity {
         StringBuilder sh = new StringBuilder();
         sh.append("set +e\n");
         sh.append("QUERY=").append(DiagnosticCommands.shellQuote(q)).append("\n");
-        sh.append("echo '==== DISCOVER_PROJECTS v2.1.0 ===='\n");
+        sh.append("echo '==== DISCOVER_PROJECTS v2.1.1 ===='\n");
         sh.append("echo \"query=$QUERY\"\n");
         sh.append("echo '==== candidate project dirs ===='\n");
         sh.append("for ROOT in /home/ubuntu /home/ubuntu/ai-agents /home/ubuntu/.config /home/ubuntu/_runtime /home/ubuntu/projects /home/ubuntu/apps /opt /srv /var/www /usr/local; do\n");
@@ -920,7 +929,7 @@ public class MainActivity extends Activity {
             return sh.toString();
         }
         sh.append("P=").append(DiagnosticCommands.shellQuote(p)).append("\n");
-        sh.append("echo '==== RESOLVE_PROJECT_IDENTITY v2.1.0 ===='\n");
+        sh.append("echo '==== RESOLVE_PROJECT_IDENTITY v2.1.1 ===='\n");
         sh.append("echo \"query=$QUERY\"; echo \"path=$P\"\n");
         sh.append("echo '==== metadata ===='; ls -la \"$P\" 2>/dev/null | head -n 120 || true\n");
         sh.append("echo '==== git remote ===='; (cd \"$P\" 2>/dev/null && git remote -v 2>/dev/null && git status --short 2>/dev/null | head -n 80) || true\n");
@@ -2578,7 +2587,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v").append(BuildConfig.VERSION_NAME).append("\n");
+        sb.append("- App 版本：v").append(appVersionName()).append("\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");

@@ -11,8 +11,8 @@ android {
         applicationId = "com.oracleairescue"
         minSdk = 26
         targetSdk = 35
-        versionCode = 59
-        versionName = "2.1.0"
+        versionCode = 60
+        versionName = "2.1.1"
     }
 
     signingConfigs {
@@ -36,6 +36,10 @@ android {
                 "proguard-rules.pro"
             )
         }
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     compileOptions {

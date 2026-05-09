@@ -2,7 +2,7 @@
 
 這是一個手機端 Android 救援 App 專案。它不需要 Oracle Cloud 上的 AI 正常運作；手機 App 會直接呼叫外部 LLM API，並透過 SSH 連到 Oracle Cloud 讀取 log、診斷問題、產生修復建議、讀取/修改檔案。
 
-## v2.1.0 雲端 Agent Runtime 穩定核心與 LOG 留存版
+## v2.1.1 GitHub Actions 編譯修正版
 
 本版正式採用「雲端 Oracle Rescue Agent Runtime」作為單一主流程：手機 App 只負責部署、啟動、等待與讀取結果，不再把 App 直連 SSH 工具橋接作為第二套主 Agent。這能避免雙路徑導致規範不一致與除錯混亂。
 
@@ -899,4 +899,11 @@ NVIDIA NIM Gemma 4 31B
 - 雲端 Agent 啟動改為 `python3 -u`，並加入 start / RC / end sentinel，App 可解析真正遠端 exit code。
 - App 端 SSH 等待 channel exit-status，避免 JSch 短暫回傳 `-1` 導致誤判。
 - 若雲端 Agent 執行不完整，App 會自動切換到 App 直連 SSH 工具橋接；仍使用使用者選定主模型，不增加主模型備援。
-- 修正 LOG 回報 App 版本硬編碼問題，改用 BuildConfig.VERSION_NAME。
+- 修正 LOG 回報 App 版本硬編碼問題，改用 PackageManager 讀取版本。
+
+
+## v2.1.1 GitHub Actions 編譯修正
+
+- 修正 `MainActivity.java` 使用 `BuildConfig.VERSION_NAME` 在 GitHub Actions release 編譯時找不到 `BuildConfig` 的問題。
+- 報告版本改由 `PackageManager` 讀取目前安裝版本，並提供 `APP_VERSION_FALLBACK`。
+- `app/build.gradle.kts` 明確啟用 `buildFeatures { buildConfig = true }`，降低未來引用 BuildConfig 的風險。
