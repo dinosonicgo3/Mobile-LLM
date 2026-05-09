@@ -4,21 +4,35 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag，例如 v1.3.0'
-        required: true
-        default: 'v1.3.5'
+        description: 'Release tag，可留空；留空會自動使用 app/build.gradle.kts 的 versionName，例如 v1.4.3'
+        required: false
+        default: ''
 
 permissions:
   contents: write
 
 jobs:
   release:
-    name: Build and publish APK release
+    name: Build and publish signed release APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: version
+        shell: bash
+        run: |
+          INPUT_TAG="${{ github.event.inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            VERSION_NAME=$(grep -o 'versionName = "[^"]*"' app/build.gradle.kts | head -n 1 | sed 's/versionName = "//;s/"//')
+            TAG="v${VERSION_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $TAG"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -43,19 +57,30 @@ jobs:
           ls -la app/oracleairescue-update-key.jks
           test -f app/oracleairescue-update-key.jks
 
-      - name: Build debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Build signed release APK
+        run: gradle assembleRelease --no-daemon --stacktrace
 
-      - name: Rename APK
+      - name: Rename release APK
         run: |
           mkdir -p release
-          cp app/build/outputs/apk/debug/*.apk release/OracleCloudAI-${{ github.event.inputs.tag }}-debug.apk
+          cp app/build/outputs/apk/release/*.apk "release/OracleCloudAI-${{ steps.version.outputs.tag }}-release.apk"
+          ls -la release
 
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag }}
-          name: 甲骨文雲端AI ${{ github.event.inputs.tag }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: 甲骨文雲端AI ${{ steps.version.outputs.tag }}
           body: |
-            Android debug APK。若新版有問題，可回到 Releases 下載舊 tag 的 APK 重新安裝，作為救援回滾。
+            這是正式 Release APK，不是 Debug APK。
+
+            用途：
+            - 給手機穩定安裝/更新
+            - 給 App 的「查看 Releases / 下載 APK」讀取
+            - 若新版壞掉，可回到 Releases 下載舊版 APK 回滾
+
+            注意：
+            - 此 APK 使用專案內固定簽章 app/oracleairescue-update-key.jks。
+            - 從固定簽章版之後，後續版本可直接覆蓋安裝並保留 App 資料。
           files: release/*.apk
+          make_latest: true

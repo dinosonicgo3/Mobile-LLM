@@ -27,17 +27,14 @@ class SecureStore {
     void saveModel(ModelSettings m) {
         String p = safeProvider(m.provider);
         put("model.provider", p);
+
+        // v1.4.2 起，API Key / Base URL / 模型名稱都依平台分開保存。
+        // 不再寫入舊版共用鍵 model.apiKey，避免 Google KEY 在切換到 NVIDIA NIM 時被誤顯示。
         put("model." + p + ".apiKey", m.apiKey);
         put("model." + p + ".baseUrl", m.baseUrl);
         put("model." + p + ".modelName", m.modelName);
         put("model." + p + ".temperature", String.valueOf(m.temperature));
         put("model." + p + ".maxContextCharacters", String.valueOf(m.maxContextCharacters));
-        // 舊版相容鍵
-        put("model.apiKey", m.apiKey);
-        put("model.baseUrl", m.baseUrl);
-        put("model.modelName", m.modelName);
-        put("model.temperature", String.valueOf(m.temperature));
-        put("model.maxContextCharacters", String.valueOf(m.maxContextCharacters));
     }
 
     ModelSettings loadModel() {
@@ -49,11 +46,17 @@ class SecureStore {
         ModelSettings d = defaultModelFor(p);
         ModelSettings m = new ModelSettings();
         m.provider = p;
-        m.apiKey = get("model." + p + ".apiKey", get("model.apiKey", d.apiKey));
-        m.baseUrl = get("model." + p + ".baseUrl", d.baseUrl);
-        m.modelName = get("model." + p + ".modelName", d.modelName);
-        m.temperature = parseDouble(get("model." + p + ".temperature", get("model.temperature", "0.2")), 0.2);
-        m.maxContextCharacters = Math.max(8000, Math.min(200000, parseInt(get("model." + p + ".maxContextCharacters", get("model.maxContextCharacters", "60000")), 60000)));
+
+        // 只允許 Gemini 從舊版共用鍵遷移一次；其他平台不可拿到 Google 的 KEY。
+        String legacyApiKey = "gemini".equals(p) ? get("model.apiKey", d.apiKey) : d.apiKey;
+        String legacyBaseUrl = "gemini".equals(p) ? get("model.baseUrl", d.baseUrl) : d.baseUrl;
+        String legacyModelName = "gemini".equals(p) ? get("model.modelName", d.modelName) : d.modelName;
+
+        m.apiKey = get("model." + p + ".apiKey", legacyApiKey);
+        m.baseUrl = get("model." + p + ".baseUrl", legacyBaseUrl);
+        m.modelName = get("model." + p + ".modelName", legacyModelName);
+        m.temperature = parseDouble(get("model." + p + ".temperature", "0.2"), 0.2);
+        m.maxContextCharacters = Math.max(8000, Math.min(200000, parseInt(get("model." + p + ".maxContextCharacters", "60000"), 60000)));
         return m;
     }
 

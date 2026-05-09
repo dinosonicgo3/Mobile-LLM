@@ -117,7 +117,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.4.1");
+        title.setText("甲骨文雲端AI  v1.4.3");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -168,6 +168,7 @@ public class MainActivity extends Activity {
         chatModelSpinner = new Spinner(this);
         refreshChatModelSpinner();
         box.addView(chatModelSpinner);
+        box.addView(label("目前平台：" + providerTitle(modelSettings.provider) + "｜Temperature " + modelSettings.temperature + "＝回覆創意程度｜上下文 " + modelSettings.maxContextCharacters + " 字元＝會帶入的最近對話量", 13, false));
 
         chatLogView = label("", 14, false);
         chatLogView.setTextIsSelectable(true);
@@ -270,30 +271,37 @@ public class MainActivity extends Activity {
         providerSpinner.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, providerLabels));
         providerSpinner.setSelection(providerIndex(modelSettings.provider));
         box.addView(providerSpinner);
+        TextView providerExplain = label("目前平台：" + providerTitle(modelSettings.provider) + "｜各平台的 KEY、Base URL、模型清單、常用模型都分開保存。", 13, false);
+        box.addView(providerExplain);
 
+        box.addView(label("API Key：只屬於目前選擇的平台；Google/NVIDIA/Kaggle/自訂不會共用。", 13, true));
         EditText apiKey = edit("API Key，Kaggle 若無驗證可留空", false);
         apiKey.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         apiKey.setText(modelSettings.apiKey);
         box.addView(apiKey);
 
+        box.addView(label("Base URL：只屬於目前平台。", 13, true));
         EditText baseUrl = edit("Base URL，例如 https://integrate.api.nvidia.com/v1 或 Kaggle 隧道 /v1", false);
         baseUrl.setText(modelSettings.baseUrl);
         box.addView(baseUrl);
 
+        box.addView(label("目前模型名稱：聊天時實際呼叫的模型。", 13, true));
         EditText modelName = edit("目前模型名稱", false);
         modelName.setText(modelSettings.modelName);
         box.addView(modelName);
 
-        EditText temperature = edit("Temperature，例如 0.2", false);
+        box.addView(label("Temperature：回覆創意程度。0.2 較穩、較少亂飄；數字越高越發散。", 13, true));
+        EditText temperature = edit("例如 0.2", false);
         temperature.setText(String.valueOf(modelSettings.temperature));
         box.addView(temperature);
 
-        EditText context = edit("上下文保留字元數，預設 60000", false);
+        box.addView(label("上下文保留字元數：送給模型的最近對話量。60000 代表最多帶入約 6 萬字元。", 13, true));
+        EditText context = edit("預設 60000", false);
         context.setInputType(InputType.TYPE_CLASS_NUMBER);
         context.setText(String.valueOf(modelSettings.maxContextCharacters));
         box.addView(context);
 
-        TextView catalogInfo = label("模型清單：" + store.loadCatalog(modelSettings.provider).size() + "｜常用模型：" + store.loadFavorites(modelSettings.provider).size(), 14, false);
+        TextView catalogInfo = label("目前平台：" + providerTitle(modelSettings.provider) + "｜本平台模型清單：" + store.loadCatalog(modelSettings.provider).size() + "｜本平台常用模型：" + store.loadFavorites(modelSettings.provider).size(), 14, false);
         box.addView(catalogInfo);
 
         providerSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -306,7 +314,8 @@ public class MainActivity extends Activity {
                     apiKey.setText(modelSettings.apiKey);
                     temperature.setText(String.valueOf(modelSettings.temperature));
                     context.setText(String.valueOf(modelSettings.maxContextCharacters));
-                    catalogInfo.setText("模型清單：" + store.loadCatalog(code).size() + "｜常用模型：" + store.loadFavorites(code).size());
+                    providerExplain.setText("目前平台：" + providerTitle(code) + "｜各平台的 KEY、Base URL、模型清單、常用模型都分開保存。");
+                    catalogInfo.setText("目前平台：" + providerTitle(code) + "｜本平台模型清單：" + store.loadCatalog(code).size() + "｜本平台常用模型：" + store.loadFavorites(code).size());
                 }
             }
             @Override public void onNothingSelected(AdapterView<?> parent) {}
@@ -344,8 +353,9 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     if (models.isEmpty()) toast("沒有取得模型；Kaggle/vLLM 若未開 /models，可手動輸入模型名稱後加入常用。");
                     store.saveCatalog(modelSettings.provider, models);
-                    catalogInfo.setText("模型清單：" + models.size() + "｜常用模型：" + store.loadFavorites(modelSettings.provider).size());
-                    setStatus("已取得 " + models.size() + " 個模型");
+                    catalogInfo.setText("目前平台：" + providerTitle(modelSettings.provider) + "｜本平台模型清單：" + models.size() + "｜本平台常用模型：" + store.loadFavorites(modelSettings.provider).size());
+                    setStatus("已取得 " + providerTitle(modelSettings.provider) + " 的 " + models.size() + " 個模型");
+                    if (!models.isEmpty()) openFavoritesDialog(modelName, catalogInfo);
                 });
             });
         });
@@ -365,7 +375,7 @@ public class MainActivity extends Activity {
             if (!exists) fav.add(new ModelOption(modelSettings.modelName, modelSettings.modelName, "手動加入"));
             store.saveFavorites(modelSettings.provider, fav);
             store.saveModel(modelSettings);
-            catalogInfo.setText("模型清單：" + store.loadCatalog(modelSettings.provider).size() + "｜常用模型：" + fav.size());
+            catalogInfo.setText("目前平台：" + providerTitle(modelSettings.provider) + "｜本平台模型清單：" + store.loadCatalog(modelSettings.provider).size() + "｜本平台常用模型：" + fav.size());
             toast("已加入常用模型");
         });
         Button test = button("測試聊天 API");
@@ -399,7 +409,7 @@ public class MainActivity extends Activity {
                     apiKey.setText(modelSettings.apiKey);
                     baseUrl.setText(modelSettings.baseUrl);
                     modelName.setText(modelSettings.modelName);
-                    catalogInfo.setText("模型清單：" + store.loadCatalog("kaggle").size() + "｜常用模型：" + store.loadFavorites("kaggle").size());
+                    catalogInfo.setText("目前平台：" + providerTitle("kaggle") + "｜本平台模型清單：" + store.loadCatalog("kaggle").size() + "｜本平台常用模型：" + store.loadFavorites("kaggle").size());
                     showTextDialog("Kaggle 端點已同步", "Base URL：" + modelSettings.baseUrl + "\n模型：" + modelSettings.modelName + "\n\n之後聊天頁選 Kaggle 模型即可直接使用。 ");
                 } else {
                     showTextDialog("尚未取得 Kaggle 端點", "GitHub 設定檔中還沒有 kaggle.baseUrl / kaggleBaseUrl。\n\n這代表 Kaggle 端程式尚未把目前隧道網址發布到 GitHub。App 無法憑空知道動態隧道網址。 ");
@@ -413,40 +423,108 @@ public class MainActivity extends Activity {
     }
 
     private void openFavoritesDialog(EditText modelName, TextView catalogInfo) {
-        List<ModelOption> catalog = store.loadCatalog(modelSettings.provider);
+        final String provider = modelSettings.provider;
+        List<ModelOption> catalog = store.loadCatalog(provider);
         if (catalog.isEmpty()) {
             String current = modelName.getText().toString().trim();
             if (current.isEmpty()) { toast("沒有模型清單，請先取得模型或手動輸入模型名稱。 "); return; }
-            List<ModelOption> fav = store.loadFavorites(modelSettings.provider);
+            List<ModelOption> fav = store.loadFavorites(provider);
             fav.add(new ModelOption(current, current, "手動加入"));
-            store.saveFavorites(modelSettings.provider, fav);
+            store.saveFavorites(provider, fav);
             toast("已加入常用模型");
             return;
         }
-        List<ModelOption> fav = store.loadFavorites(modelSettings.provider);
-        Set<String> favIds = new HashSet<>();
-        for (ModelOption m : fav) favIds.add(m.id);
-        String[] items = new String[catalog.size()];
-        boolean[] checked = new boolean[catalog.size()];
-        for (int i = 0; i < catalog.size(); i++) {
-            ModelOption m = catalog.get(i);
-            items[i] = m.id + (m.description.isEmpty() ? "" : "\n" + m.description);
-            checked[i] = favIds.contains(m.id);
+
+        List<ModelOption> fav = store.loadFavorites(provider);
+        Set<String> selectedIds = new HashSet<>();
+        for (ModelOption m : fav) selectedIds.add(m.id);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(10), dp(8), dp(10), dp(4));
+
+        TextView title = label("目前平台：" + providerTitle(provider) + "\n每一列是一個模型。勾選後只會加入此平台的常用模型，不會影響其他平台。", 14, false);
+        content.addView(title);
+
+        EditText search = edit("搜尋本平台模型，例如 qwen、llama、gemini、70b", false);
+        content.addView(search);
+
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        List<View> rowViews = new ArrayList<>();
+        List<ModelOption> rowModels = new ArrayList<>();
+
+        for (ModelOption m : catalog) {
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.VERTICAL);
+            item.setPadding(dp(8), dp(8), dp(8), dp(8));
+            item.setBackgroundColor(0xffffffff);
+
+            CheckBox cb = new CheckBox(this);
+            String main = m.displayName != null && !m.displayName.equals(m.id) ? m.displayName + "\n" + m.id : m.id;
+            cb.setText(main);
+            cb.setTextSize(15);
+            cb.setSingleLine(false);
+            cb.setChecked(selectedIds.contains(m.id));
+            cb.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (isChecked) selectedIds.add(m.id);
+                else selectedIds.remove(m.id);
+            });
+            item.addView(cb);
+
+            if (m.description != null && m.description.trim().length() > 0) {
+                TextView desc = label(m.description, 12, false);
+                desc.setPadding(dp(34), 0, dp(4), dp(4));
+                item.addView(desc);
+            }
+
+            TextView divider = label(" ", 2, false);
+            divider.setBackgroundColor(0xffeeeeee);
+            list.addView(item);
+            list.addView(divider);
+            rowViews.add(item);
+            rowModels.add(m);
         }
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
+        content.addView(scroll, new LinearLayout.LayoutParams(-1, dp(520)));
+
+        search.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence q, int start, int before, int count) {
+                String needle = q == null ? "" : q.toString().trim().toLowerCase(Locale.ROOT);
+                for (int i = 0; i < rowViews.size(); i++) {
+                    ModelOption m = rowModels.get(i);
+                    String hay = (m.id + " " + m.displayName + " " + m.description).toLowerCase(Locale.ROOT);
+                    rowViews.get(i).setVisibility(needle.isEmpty() || hay.contains(needle) ? View.VISIBLE : View.GONE);
+                }
+            }
+            @Override public void afterTextChanged(android.text.Editable e) {}
+        });
+
         new AlertDialog.Builder(this)
-            .setTitle("勾選常用模型")
-            .setMultiChoiceItems(items, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
-            .setPositiveButton("儲存", (d, w) -> {
+            .setTitle("管理常用模型｜" + providerTitle(provider))
+            .setView(content)
+            .setPositiveButton("儲存勾選", (d, w) -> {
                 List<ModelOption> selected = new ArrayList<>();
-                for (int i = 0; i < catalog.size(); i++) if (checked[i]) selected.add(catalog.get(i));
-                store.saveFavorites(modelSettings.provider, selected);
+                for (ModelOption m : catalog) if (selectedIds.contains(m.id)) selected.add(m);
+                store.saveFavorites(provider, selected);
                 if (!selected.isEmpty()) {
+                    modelSettings = store.loadModelFor(provider);
                     modelSettings.modelName = selected.get(0).id;
                     modelName.setText(modelSettings.modelName);
                     store.saveModel(modelSettings);
                 }
-                catalogInfo.setText("模型清單：" + catalog.size() + "｜常用模型：" + selected.size());
-                toast("已儲存常用模型");
+                catalogInfo.setText("目前平台：" + providerTitle(provider) + "｜本平台模型清單：" + catalog.size() + "｜本平台常用模型：" + selected.size());
+                toast("已儲存 " + providerTitle(provider) + " 的常用模型");
+                refreshChatModelSpinner();
+            })
+            .setNeutralButton("清空本平台常用", (d, w) -> {
+                store.saveFavorites(provider, new ArrayList<>());
+                catalogInfo.setText("目前平台：" + providerTitle(provider) + "｜本平台模型清單：" + catalog.size() + "｜本平台常用模型：0");
+                toast("已清空 " + providerTitle(provider) + " 的常用模型");
+                refreshChatModelSpinner();
             })
             .setNegativeButton("取消", null)
             .show();

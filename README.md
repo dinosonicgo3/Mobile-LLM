@@ -284,3 +284,30 @@ class, interface, enum, or record expected
 ```
 
 並使 `dispatchWorkflow`、`listReleases` 等方法被 Java 編譯器判定在 class 外。
+
+
+## v1.4.2 模型清單與平台 KEY 修正
+
+- 模型清單管理改為逐列顯示，可搜尋，不再擠在一起。
+- Google Gemini / NVIDIA NIM / Kaggle / 自訂平台的 API Key、Base URL、模型名稱、模型清單、常用模型分開保存。
+- 修正舊版共用 `model.apiKey` 導致 Google KEY 在切換到 NVIDIA NIM 時被誤顯示的問題。
+- 設定頁新增 `Temperature` 與 `上下文保留字元數` 說明。
+
+
+## v1.4.3 Release APK 工作流程修正
+
+從此版開始，建議日常更新使用：
+
+```text
+Actions → Build Release APK → Run workflow
+```
+
+此 workflow 會：
+
+- 執行 `gradle assembleRelease`
+- 使用固定簽章產生正式 release APK
+- 自動建立 GitHub Release
+- 若 tag 留空，會自動從 `app/build.gradle.kts` 的 `versionName` 產生，例如 `v1.4.3`
+- App 的「查看 Releases / 下載 APK」會讀取這裡建立的 Release
+
+`Build Debug APK` 仍保留作為快速測試與排錯用途，但穩定使用建議跑 `Build Release APK`。
