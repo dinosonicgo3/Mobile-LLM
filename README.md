@@ -813,3 +813,36 @@ NVIDIA NIM Gemma 4 31B
 
 - Android App 傳給 Oracle Rescue Agent 的 request
 - Oracle 端 `oracle_rescue_agent.py`
+
+
+## v2.0.3 完整權限 Oracle Rescue Agent
+
+依使用者要求，Oracle Rescue Agent 改為完整權限模式。
+
+### 重要變更
+
+- `ssh_exec` 不再限制只能讀取型指令
+- 新增 `shell_exec`
+- 新增 `remove_project`
+- 允許 LLM 要求執行：
+  - `rm` / `rm -rf`
+  - `pkill` / `killall`
+  - `systemctl stop` / `systemctl disable`
+  - `docker rm`
+  - `crontab` 清理
+  - `mv` / `cp` / `chmod` / `chown`
+  - `sudo -n`
+
+### 密碼規則
+
+- App 不要求輸入 sudo 密碼
+- 不新增密碼欄位
+- 不等待密碼輸入
+- 需要 root 權限時，LLM 應使用 `sudo -n`
+- 如果主機沒有免密 sudo，會回報實際權限錯誤
+
+### 模型規則維持
+
+- 主模型不備援
+- 主模型失敗即報錯
+- 後段驗證仍保留 Google 31B → NVIDIA NIM 31B 備援

@@ -1,5 +1,5 @@
 {
-  "version": "v2.0.2-main-model-no-fallback-verifier-fallback-only",
+  "version": "v2.0.3-full-authority-oracle-rescue-agent",
   "systemPrompt": "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。你可以進行一般聊天、程式修正、LLM API 設定、Kaggle/NVIDIA NIM/Google API 診斷，以及 Oracle Cloud 維修。你必須保持上下文，不得只根據最後一句話回答。",
   "extraDiagnosticCommands": [
     "date",
@@ -34,7 +34,7 @@
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "主模型流程移除備援：一般檢修/工具判斷/修程式只使用目前選定模型，失敗即報錯；後段驗證仍保留 Google 31B -> NVIDIA NIM 31B 備援。",
+    "fix": "新增完整權限模式：ssh_exec/shell_exec 可執行任意 shell 指令；新增 remove_project；不要求 sudo 密碼，需 root 時使用 sudo -n。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {
@@ -133,5 +133,28 @@
       "NVIDIA NIM Gemma 4 31B"
     ],
     "verifierFailurePolicy": "verification FAIL; block keeping repair"
+  },
+  "authorityMode": {
+    "mode": "full_unrestricted",
+    "sshExecPolicy": "allow_any_shell_command",
+    "allowedDestructiveActions": [
+      "rm",
+      "rm -rf",
+      "pkill",
+      "killall",
+      "systemctl stop",
+      "systemctl disable",
+      "docker rm",
+      "crontab cleanup",
+      "mv",
+      "cp",
+      "chmod",
+      "chown",
+      "sudo -n"
+    ],
+    "passwordPrompt": "disabled",
+    "sudoMode": "sudo -n only; no password input",
+    "mainModelFallback": "disabled",
+    "verifierFallback": "enabled"
   }
 }

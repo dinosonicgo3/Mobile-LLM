@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.0.2
+"""Oracle AI Rescue Agent v2.0.3
 Runs on the Oracle host. The Android app is only a remote controller/bridge.
 Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
 Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
-The LLM decides tools; this script executes safe local tools, backs up files,
-validates changes, and asks 31B verifier before keeping repairs.
+Full authority mode: the LLM may execute shell commands, remove projects, stop services, kill processes, and use sudo -n.
+No password prompt is used or requested. If sudo -n is unavailable, the command will fail and report the real permission error.
 """
 import argparse, base64, difflib, json, os, re, shlex, subprocess, sys, time, urllib.request, urllib.error
 from pathlib import Path
@@ -70,11 +70,15 @@ def chat_chain(models, messages, timeout=120):
 
 
 def safe_path(path):
+    """Full authority path check.
+
+    This is not a policy restriction; it only prevents shell/control-character injection.
+    Any absolute path is allowed, including /home, /opt, /srv, /var/www, /etc, /root, etc.
+    """
     p = (path or "").strip()
-    if not p or ".." in p or any(x in p for x in [";", "|", "&", ">", "<", "\n", "\r"]):
+    if not p or not p.startswith("/"):
         return ""
-    allowed = ("/home/", "/opt/", "/srv/", "/var/www/")
-    if not p.startswith(allowed):
+    if any(x in p for x in ["\0", "\n", "\r"]):
         return ""
     return p
 
@@ -118,6 +122,154 @@ def run(cmd, timeout=90):
     except Exception as e:
         return {"ok": False, "output": f"command failed: {type(e).__name__}: {e}"}
 
+
+
+def run_full(cmd, timeout=180):
+    """Full authority shell bridge.
+
+    No read-only policy is applied here. This intentionally allows rm, pkill,
+    systemctl, docker rm, crontab edits, sudo -n, etc.
+    The agent never prompts for sudo password; commands that require password
+    must use sudo -n or will fail and report the error.
+    """
+    if not cmd or not str(cmd).strip():
+        return {"ok": False, "output": "空指令。"}
+    c = str(cmd)
+    try:
+        p = subprocess.run(c, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        out = f"$ {c}\nexitCode={p.returncode}\n"
+        if p.stdout.strip(): out += "--- stdout ---\n" + p.stdout.strip() + "\n"
+        if p.stderr.strip(): out += "--- stderr ---\n" + p.stderr.strip() + "\n"
+        return {"ok": p.returncode == 0, "output": limit(out, MAX_OBS)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "output": f"$ {c}\nTIMEOUT after {timeout}s"}
+    except Exception as e:
+        return {"ok": False, "output": f"command failed: {type(e).__name__}: {e}"}
+
+
+def shell_quote(x):
+    return shlex.quote(str(x))
+
+
+def remove_project(target="", paths=None):
+    """Remove/quarantine any project target with full authority.
+
+    This tool is intentionally powerful. It:
+    - discovers target-related paths/processes/services/crontab lines
+    - creates a tar.gz backup when possible
+    - moves discovered paths into quarantine, falling back to sudo -n mv
+    - kills target processes with pkill -f target using normal user and sudo -n
+    - stops/disables matching systemd units with sudo -n when found
+    - removes matching crontab lines for the current user
+    It does not ask for passwords.
+    """
+    target = (target or "").strip()
+    if not target and not paths:
+        return {"ok": False, "output": "remove_project 需要 target 或 paths。"}
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", target or "manual_paths").strip("_") or "target"
+    base = Path.home() / ".oracle_ai_rescue"
+    quarantine = base / "quarantine" / f"{safe_name}_{stamp}"
+    backups = base / "backups"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    backups.mkdir(parents=True, exist_ok=True)
+
+    discovered = []
+    if paths:
+        if isinstance(paths, str):
+            paths = [paths]
+        for p in paths:
+            sp = safe_path(p)
+            if sp and sp not in discovered:
+                discovered.append(sp)
+
+    if target:
+        # Broad discovery: user home, common project roots, config roots and systemd units.
+        find_cmd = (
+            "find /home /opt /srv /var/www /etc/systemd/system "
+            "-maxdepth 7 \\( -iname " + shell_quote(f"*{target}*") + " -o -path " + shell_quote(f"*{target}*") + " \\) "
+            "2>/dev/null | head -n 200"
+        )
+        p = subprocess.run(find_cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        for line in p.stdout.splitlines():
+            sp = safe_path(line.strip())
+            if sp and sp not in discovered:
+                discovered.append(sp)
+
+    report = []
+    report.append(f"target={target}")
+    report.append(f"quarantine={quarantine}")
+    report.append("==== DISCOVERED PATHS ====")
+    report.extend(discovered or ["(none)"])
+
+    # Process/service cleanup by target only.
+    if target:
+        report.append("==== KILL PROCESSES ====")
+        for cmd in [
+            "pkill -f " + shell_quote(target),
+            "sudo -n pkill -f " + shell_quote(target),
+            "killall " + shell_quote(target) + " 2>/dev/null",
+            "sudo -n killall " + shell_quote(target) + " 2>/dev/null",
+        ]:
+            res = run_full(cmd, timeout=60)
+            report.append(res["output"])
+
+        report.append("==== SYSTEMD STOP/DISABLE MATCHING UNITS ====")
+        list_units = subprocess.run(
+            "systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}'",
+            shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60
+        )
+        units = [u.strip() for u in list_units.stdout.splitlines() if target.lower() in u.lower()]
+        if not units:
+            report.append("(no matching services)")
+        for u in units[:50]:
+            for cmd in [
+                "sudo -n systemctl stop " + shell_quote(u),
+                "sudo -n systemctl disable " + shell_quote(u),
+            ]:
+                report.append(run_full(cmd, timeout=60)["output"])
+
+        report.append("==== CRONTAB CLEANUP CURRENT USER ====")
+        cleanup = (
+            "TMP=$(mktemp); "
+            "crontab -l 2>/dev/null | grep -vi " + shell_quote(target) + " > $TMP; "
+            "crontab $TMP; RC=$?; rm -f $TMP; exit $RC"
+        )
+        report.append(run_full(cleanup, timeout=60)["output"])
+
+    # Backup and quarantine paths.
+    report.append("==== BACKUP AND QUARANTINE PATHS ====")
+    for sp in discovered:
+        name = re.sub(r"[^A-Za-z0-9_.-]+", "_", sp.strip("/")) or "path"
+        backup_file = backups / f"{safe_name}_{name}_{stamp}.tar.gz"
+        qdest = quarantine / name
+        report.append(f"--- path={sp} ---")
+        # Backup best effort.
+        backup_cmd = "tar -czf " + shell_quote(str(backup_file)) + " -C / " + shell_quote(sp.lstrip("/"))
+        backup_res = run_full(backup_cmd, timeout=300)
+        if not backup_res["ok"]:
+            backup_res = run_full("sudo -n " + backup_cmd, timeout=300)
+        report.append("[backup]\n" + backup_res["output"])
+
+        # Move to quarantine; fallback to sudo -n mv.
+        mv_cmd = "mkdir -p " + shell_quote(str(quarantine)) + " && mv -- " + shell_quote(sp) + " " + shell_quote(str(qdest))
+        mv_res = run_full(mv_cmd, timeout=180)
+        if not mv_res["ok"]:
+            mv_res = run_full("sudo -n " + mv_cmd, timeout=180)
+        report.append("[quarantine]\n" + mv_res["output"])
+
+    # Verify.
+    report.append("==== VERIFY REMAINS ====")
+    if target:
+        verify_cmd = (
+            "echo '[process]'; ps aux | grep -i " + shell_quote(target) + " | grep -v grep || true; "
+            "echo '[paths]'; find /home /opt /srv /var/www /etc/systemd/system -maxdepth 7 -iname " + shell_quote(f"*{target}*") + " 2>/dev/null | head -n 100 || true; "
+            "echo '[services]'; systemctl list-units --type=service --all 2>/dev/null | grep -i " + shell_quote(target) + " || true; "
+            "echo '[crontab]'; crontab -l 2>/dev/null | grep -i " + shell_quote(target) + " || true"
+        )
+        report.append(run_full(verify_cmd, timeout=120)["output"])
+
+    return {"ok": True, "output": limit("\n".join(report), 30000)}
 
 def read_file(path):
     p = safe_path(path)
@@ -265,14 +417,16 @@ def repair_file(req, models, path, instruction):
 def execute_tool(req, models, tool_obj):
     tool = (tool_obj.get("tool") or "").strip()
     args = tool_obj.get("args") or {}
-    if tool == "ssh_exec":
-        return run(args.get("command") or "", timeout=120)
+    if tool in ("ssh_exec", "shell_exec"):
+        return run_full(args.get("command") or "", timeout=300)
+    if tool == "remove_project":
+        return remove_project(args.get("target") or "", args.get("paths"))
     if tool == "read_file":
         return read_file(args.get("path") or "")
     if tool == "list_dir":
         p = safe_path(args.get("path") or "")
         if not p: return {"ok": False, "output":"list_dir path rejected"}
-        return run(f"ls -la {shlex.quote(p)} && find {shlex.quote(p)} -maxdepth 2 -type f | head -n 120", timeout=90)
+        return run_full(f"ls -la {shlex.quote(p)} && find {shlex.quote(p)} -maxdepth 2 -type f | head -n 200", timeout=120)
     if tool == "repair_file":
         return repair_file(req, models, args.get("path") or "", args.get("instruction") or req.get("question") or "")
     if tool == "final":
@@ -294,7 +448,7 @@ def main():
     if not models:
         print("# Oracle Rescue Agent 失敗\n\n主模型沒有可用 LLM API Key。主模型不使用備援；請修正目前選定模型的 API Key / Base URL / 模型名稱。")
         return 2
-    system = (req.get("system_prompt") or "") + "\n\n你正在 Oracle 主機本機的 Rescue Agent 內。App 只是遙控器，不會代你搜尋或判斷。你必須自己選工具。所有工具以 JSON 呼叫，不要用 Markdown code fence。可用工具：\n{\"tool\":\"ssh_exec\",\"args\":{\"command\":\"讀取型 shell 指令\"}}\n{\"tool\":\"read_file\",\"args\":{\"path\":\"/home/...\"}}\n{\"tool\":\"list_dir\",\"args\":{\"path\":\"/home/...\"}}\n{\"tool\":\"repair_file\",\"args\":{\"path\":\"/home/...\",\"instruction\":\"修正要求\"}}\n{\"tool\":\"final\",\"answer\":\"最終回答\"}\n安全規則：shell 只允許讀取型指令；修改檔案必須用 repair_file，會自動備份、測試、31B 驗證、失敗回滾。"
+    system = (req.get("system_prompt") or "") + "\n\n你正在 Oracle 主機本機的 Rescue Agent 內。App 只是遙控器，不會代你搜尋或判斷。你必須自己選工具。所有工具以 JSON 呼叫，不要用 Markdown code fence。\n\n【完整權限模式】\n你可以要求執行完整 shell 指令，包括 rm/rm -rf、pkill、killall、systemctl stop/disable、docker rm、crontab 清理、mv、cp、chmod、chown、sudo -n。不要要求使用者輸入 sudo 密碼；需要 root 權限時使用 sudo -n，若 sudo -n 失敗就回報權限錯誤。\n\n可用工具：\n{\"tool\":\"ssh_exec\",\"args\":{\"command\":\"任意 shell 指令，可含 sudo -n\"}}\n{\"tool\":\"shell_exec\",\"args\":{\"command\":\"任意 shell 指令，可含 sudo -n\"}}\n{\"tool\":\"remove_project\",\"args\":{\"target\":\"專案關鍵字\",\"paths\":[\"/path/to/remove\"]}}\n{\"tool\":\"read_file\",\"args\":{\"path\":\"/任意/絕對路徑\"}}\n{\"tool\":\"list_dir\",\"args\":{\"path\":\"/任意/絕對路徑\"}}\n{\"tool\":\"repair_file\",\"args\":{\"path\":\"/任意/絕對路徑\",\"instruction\":\"修正要求\"}}\n{\"tool\":\"final\",\"answer\":\"最終回答\"}\n\n修程式仍應使用 repair_file，因為它會自動備份、測試、31B 驗證、失敗回滾。移除專案可使用 remove_project 或直接 ssh_exec 完成。"
     messages = [{"role":"system", "content":system}, {"role":"user", "content":"使用者問題：" + question + "\n請你直接選第一個最小工具。"}]
     transcript = []
     used_models = []

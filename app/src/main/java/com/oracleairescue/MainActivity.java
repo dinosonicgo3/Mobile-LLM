@@ -96,7 +96,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v2.0.2｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v2.0.3｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -139,7 +139,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v2.0.2");
+        title.setText("甲骨文雲端AI  v2.0.3");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -428,7 +428,7 @@ public class MainActivity extends Activity {
 
     private org.json.JSONObject buildRescueAgentRequest(String userText) throws Exception {
         org.json.JSONObject root = new org.json.JSONObject();
-        root.put("version", "2.0.2");
+        root.put("version", "2.0.3");
         root.put("question", userText);
         root.put("system_prompt", runtimeConfig == null ? "" : runtimeConfig.systemPrompt);
         root.put("max_steps", 10);
@@ -438,6 +438,8 @@ public class MainActivity extends Activity {
         // 只有後段驗證保留 31B 備援。
         root.put("main_model", modelConfigJson("main-only", modelSettings));
         root.put("main_model_fallback", "disabled");
+        root.put("authority_mode", "full_unrestricted");
+        root.put("sudo_mode", "sudo-n-no-password-prompt");
 
         root.put("verifier_google", modelConfigJson("Google 31B verifier", googleVerifier31BSettings()));
         root.put("verifier_nim", modelConfigJson("NIM 31B verifier", nimVerifier31BSettings()));
@@ -2343,7 +2345,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v2.0.2\n");
+        sb.append("- App 版本：v2.0.3\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");

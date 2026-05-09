@@ -1,0 +1,2 @@
+v2.0.3 full authority mode: ssh_exec unrestricted, remove_project enabled, sudo -n no password.
+versionCode=52
