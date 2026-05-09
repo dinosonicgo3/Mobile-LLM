@@ -188,7 +188,6 @@ class LlmClient {
             if (cfg.kaggleDefaultModel == null || cfg.kaggleDefaultModel.trim().isEmpty()) cfg.kaggleDefaultModel = cfg.kaggleModels.get(0);
             return cfg;
         }
-    }
 
 
     void dispatchWorkflow(UpdateSettings u, String workflowFile, JSONObject inputs) throws Exception {

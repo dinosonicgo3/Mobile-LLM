@@ -273,3 +273,14 @@ KAGGLE_API_TOKEN
 - 更新頁新增 GitHub Token 欄位；可與 Kaggle 頁第一欄使用同一把 Token。
 
 請勿把 GitHub Token 或 Kaggle Token 寫進程式碼、README、GitHub repo 或聊天內容。Token 只應在手機 App 或 GitHub Secrets 中保存。
+
+
+## v1.4.1 編譯修正
+
+修正 `LlmClient.java` 中多出的一個 `}`，此錯誤會導致：
+
+```text
+class, interface, enum, or record expected
+```
+
+並使 `dispatchWorkflow`、`listReleases` 等方法被 Java 編譯器判定在 class 外。
