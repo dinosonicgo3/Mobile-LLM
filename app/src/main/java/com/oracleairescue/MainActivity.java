@@ -78,7 +78,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v1.4.6｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v1.4.7｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -121,7 +121,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.4.6");
+        title.setText("甲骨文雲端AI  v1.4.7");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -165,7 +165,20 @@ public class MainActivity extends Activity {
 
     private void showChatPage() {
         LinearLayout box = page("聊天");
-        addSection(box, "聊天與上下文");
+
+        LinearLayout chatTop = new LinearLayout(this);
+        chatTop.setOrientation(LinearLayout.HORIZONTAL);
+        chatTop.setGravity(Gravity.CENTER_VERTICAL);
+        TextView chatTitle = label("聊天與上下文", 18, true);
+        chatTop.addView(chatTitle, new LinearLayout.LayoutParams(0, -2, 1));
+        Button chatTools = button("⚙");
+        chatTools.setTextSize(22);
+        chatTools.setMinWidth(dp(48));
+        chatTools.setMinHeight(dp(42));
+        chatTools.setOnClickListener(v -> openChatToolsMenu());
+        chatTop.addView(chatTools, new LinearLayout.LayoutParams(dp(52), dp(46)));
+        box.addView(chatTop);
+
         TextView hint = label("這裡可當一般手機 LLM 聊天使用，也可用來維修 Oracle。聊天會自動帶入最近上下文，避免剛說完就忘記。", 14, false);
         box.addView(hint);
 
@@ -182,26 +195,23 @@ public class MainActivity extends Activity {
         box.addView(chatLogView, new LinearLayout.LayoutParams(-1, dp(360)));
         renderChatLog();
 
+        LinearLayout inputRow = new LinearLayout(this);
+        inputRow.setOrientation(LinearLayout.HORIZONTAL);
+        inputRow.setGravity(Gravity.CENTER_VERTICAL);
+        inputRow.setPadding(0, dp(4), 0, dp(4));
+
         chatInput = edit("輸入訊息，例如：幫我檢查 Oracle AI 助理為什麼故障", true);
-        chatInput.setMinLines(3);
-        box.addView(chatInput);
+        chatInput.setMinLines(2);
 
-        Button send = button("送出訊息");
-        send.setTextSize(18);
-        send.setMinHeight(dp(58));
+        Button send = button("➤");
+        send.setTextSize(20);
+        send.setMinWidth(dp(54));
+        send.setMinHeight(dp(50));
         send.setOnClickListener(v -> sendChat());
-        box.addView(send, new LinearLayout.LayoutParams(-1, dp(64)));
 
-        LinearLayout toolRow = row();
-        Button report = button("匯出LOG回報");
-        report.setOnClickListener(v -> openReportDialog());
-        Button clear = button("清空聊天（需確認）");
-        clear.setOnClickListener(v -> confirm("確定清空聊天紀錄？\n\n這個按鈕已經移到送出訊息下方，避免誤觸。", () -> {
-            chatMessages.clear(); store.clearChat(); renderChatLog(); appLog("清空聊天紀錄"); toast("已清空");
-        }));
-        toolRow.addView(report, weight());
-        toolRow.addView(clear, weight());
-        box.addView(toolRow);
+        inputRow.addView(chatInput, new LinearLayout.LayoutParams(0, dp(64), 1));
+        inputRow.addView(send, new LinearLayout.LayoutParams(dp(58), dp(64)));
+        box.addView(inputRow);
     }
 
     private void refreshChatModelSpinner() {
@@ -892,6 +902,35 @@ public class MainActivity extends Activity {
     }
 
 
+
+    private void openChatToolsMenu() {
+        new AlertDialog.Builder(this)
+            .setTitle("聊天工具")
+            .setItems(new String[] {
+                "匯出 LOG 回報",
+                "查看 LOG 回報內容",
+                "清空聊天紀錄",
+                "清空本機 LOG"
+            }, (d, which) -> {
+                if (which == 0) openReportDialog();
+                else if (which == 1) showTextDialog("LOG 回報內容", buildSupportReportMarkdown());
+                else if (which == 2) confirm("確定清空聊天紀錄？\n\n這會清除目前 App 內的聊天紀錄，但不會刪除 API Key、SSH 設定或模型設定。", () -> {
+                    chatMessages.clear();
+                    store.clearChat();
+                    renderChatLog();
+                    appLog("清空聊天紀錄");
+                    toast("已清空聊天紀錄");
+                });
+                else if (which == 3) confirm("確定清空本機 LOG？\n\n這不會清空聊天，也不會刪除 API Key 或 SSH 設定。", () -> {
+                    store.clearAppLogs();
+                    appLog("LOG 已清空後重新開始記錄");
+                    toast("已清空本機 LOG");
+                });
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
     private void openReportDialog() {
         new AlertDialog.Builder(this)
             .setTitle("LOG 回報")
@@ -949,7 +988,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v1.4.6\n");
+        sb.append("- App 版本：v1.4.7\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");
