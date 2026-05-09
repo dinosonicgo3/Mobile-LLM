@@ -1,5 +1,5 @@
 {
-  "version": "v1.7.1-llm-direct-ssh-bridge",
+  "version": "v2.0.0-oracle-rescue-agent-runtime",
   "systemPrompt": "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。你可以進行一般聊天、程式修正、LLM API 設定、Kaggle/NVIDIA NIM/Google API 診斷，以及 Oracle Cloud 維修。你必須保持上下文，不得只根據最後一句話回答。",
   "extraDiagnosticCommands": [
     "date",
@@ -34,7 +34,7 @@
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "改為 LLM 直連 SSH 工具橋接模式：App 不主動 bootstrap 掃描，第一個工具由 LLM 決定；新增 ssh_exec 與 repair_file 工具。",
+    "fix": "重構為 Oracle 端 Rescue Agent：Android App 只負責 SSH 部署/啟動；LLM 在 Oracle 主機本機工具迴圈中分析、讀檔、修檔、測試、31B 驗證與回滾。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {
@@ -104,5 +104,18 @@
     ],
     "modelTimeoutPolicy": "show collected tool results instead of failing blank",
     "repairRole": "LLM diagnoses and proposes fixes; App executes safe tools/backups/tests/rollback; 31B verifies"
+  },
+  "oracleRescueAgent": {
+    "enabled": true,
+    "remotePath": "~/.oracle_ai_rescue/oracle_rescue_agent.py",
+    "architecture": "Android App = remote controller; Oracle rescue_agent.py = agent runtime; LLM decides tools on Oracle host.",
+    "tools": [
+      "ssh_exec(read-only)",
+      "read_file",
+      "list_dir",
+      "repair_file",
+      "final"
+    ],
+    "safety": "write operations only through repair_file with backup, validation, 31B verification, rollback on failure"
   }
 }

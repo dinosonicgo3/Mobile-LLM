@@ -735,3 +735,16 @@ LLM 繼續判斷、解析、決定下一步
 App 不再代為 bootstrap 掃描 Oracle。LLM 自己決定第一個 SSH 工具，App 只作橋接、安全檢查、備份、測試與回滾。
 
 新增：`ssh_exec` 只讀 SSH 工具、`repair_file` 安全修復工具。
+
+
+## v2.0.0 Oracle Rescue Agent 架構
+
+本版把 Agent Runtime 從 Android App 移到 Oracle 主機本機。
+
+- App 只負責 SSH 部署/啟動 `~/.oracle_ai_rescue/oracle_rescue_agent.py`
+- LLM 在 Oracle 主機內直接選工具
+- Agent 在 Oracle 本機執行讀取型 shell、讀檔、修檔、測試
+- 修檔只能透過 `repair_file`，會自動備份、驗證、失敗回滾
+- Gemma 4 31B 後段驗證保留：Google 31B 優先，NVIDIA NIM `google/gemma-4-31b-it` 備援
+
+這版的目標是接近雲端 AI 的運作方式：LLM 是維修大腦，Oracle 本機 Agent 是手腳，手機 App 是遙控器。

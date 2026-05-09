@@ -126,6 +126,37 @@ class SshClient {
         return r.stdout;
     }
 
+    void uploadText(String remotePath, String content, int mode) throws Exception {
+        if (remotePath == null || remotePath.trim().isEmpty()) throw new IllegalArgumentException("遠端路徑是空的。");
+        Session session = openSession();
+        ChannelSftp sftp = null;
+        try {
+            sftp = (ChannelSftp) session.openChannel("sftp");
+            sftp.connect(15000);
+            String path = remotePath.trim();
+            int slash = path.lastIndexOf('/');
+            if (slash > 0) mkdirs(sftp, path.substring(0, slash));
+            byte[] data = (content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
+            sftp.put(new ByteArrayInputStream(data), path);
+            try { sftp.chmod(mode, path); } catch (Exception ignored) {}
+        } finally {
+            if (sftp != null && sftp.isConnected()) sftp.disconnect();
+            session.disconnect();
+        }
+    }
+
+    private static void mkdirs(ChannelSftp sftp, String dir) {
+        if (dir == null || dir.trim().isEmpty() || "/".equals(dir.trim())) return;
+        String clean = dir.trim();
+        String[] parts = clean.split("/");
+        String cur = clean.startsWith("/") ? "" : ".";
+        for (String part : parts) {
+            if (part == null || part.length() == 0) continue;
+            cur = cur.length() == 0 ? "/" + part : cur + "/" + part;
+            try { sftp.mkdir(cur); } catch (Exception ignored) {}
+        }
+    }
+
     String writeFileWithBackup(String path, String content) throws Exception {
         if (path == null || path.trim().isEmpty()) throw new IllegalArgumentException("請輸入檔案路徑。");
         Session session = openSession();

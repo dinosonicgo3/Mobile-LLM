@@ -96,7 +96,7 @@ public class MainActivity extends Activity {
         chatMessages.addAll(store.loadChat());
         showShell("聊天");
         showChatPage();
-        appLog("APP 啟動 v1.7.1｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
+        appLog("APP 啟動 v2.0.0｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
     }
 
@@ -139,7 +139,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         TextView title = new TextView(this);
-        title.setText("甲骨文雲端AI  v1.7.1");
+        title.setText("甲骨文雲端AI  v2.0.0");
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(20);
         title.setPadding(dp(12), dp(12), dp(12), dp(4));
@@ -289,20 +289,20 @@ public class MainActivity extends Activity {
         chatMessages.add(new ChatMessage("user", text));
         renderChatLog();
 
-        // v1.6.2：Oracle 相關問題改用工具式 Agent。
-        // 由 LLM 決定要呼叫哪個安全工具，而不是 App 先掃一大包塞給模型。
+        // v2.0：Oracle 問題交給雲端本機 Rescue Agent。
+        // App 只負責 SSH 部署/啟動 Agent；LLM 在 Oracle 端直接決定工具與修復流程。
         if (isOracleIntent(text) && !"local_gemma".equals(modelSettings.provider)) {
-            runTask("Oracle Agent 正在選擇工具…", () -> {
-                String reply = runOracleToolAgent(text);
+            runTask("Oracle Rescue Agent 正在雲端執行…", () -> {
+                String reply = runOracleRescueAgent(text);
                 String finalReply = reply == null || reply.trim().isEmpty()
-                    ? "Oracle Agent 沒有產生回覆。請改用『維修』頁的有限診斷封包，或匯出 LOG 給我。"
+                    ? "Oracle Rescue Agent 沒有產生回覆。請匯出 LOG 回報。"
                     : reply;
                 ui.post(() -> {
-                    appLog("ORACLE TOOL AGENT 回覆｜長度：" + finalReply.length());
+                    appLog("ORACLE RESCUE AGENT 回覆｜長度：" + finalReply.length());
                     chatMessages.add(new ChatMessage("assistant", finalReply));
                     store.saveChat(chatMessages);
                     renderChatLog();
-                    setStatus("Oracle Agent 完成");
+                    setStatus("Oracle Rescue Agent 完成");
                 });
             });
             return;
@@ -373,6 +373,88 @@ public class MainActivity extends Activity {
             q.contains("日誌") || q.contains("維修") || q.contains("故障") ||
             q.contains("部署") || q.contains("更新") || q.contains("重啟") ||
             q.contains("檢查") || q.contains("狀態");
+    }
+
+    private String runOracleRescueAgent(String userText) throws Exception {
+        if (serverSettings == null || serverSettings.host == null || serverSettings.host.trim().isEmpty()) {
+            return "Oracle 主機尚未設定。請先到 Oracle 頁填入主機、Port、使用者與私鑰。";
+        }
+        if ((serverSettings.privateKey == null || serverSettings.privateKey.trim().isEmpty()) &&
+            (serverSettings.password == null || serverSettings.password.trim().isEmpty())) {
+            return "Oracle SSH 私鑰或密碼尚未設定。";
+        }
+
+        SshClient ssh = new SshClient(serverSettings);
+        String dir = remoteRescueAgentDir();
+        String agentPath = dir + "/oracle_rescue_agent.py";
+        String requestPath = "/tmp/oracle_ai_rescue_request_" + System.currentTimeMillis() + ".json";
+
+        ui.post(() -> setStatus("正在安裝/更新 Oracle Rescue Agent…"));
+        ssh.runCommand("mkdir -p " + DiagnosticCommands.shellQuote(dir) + " && chmod 700 " + DiagnosticCommands.shellQuote(dir), 30000);
+        ssh.uploadText(agentPath, readAssetText("oracle_rescue_agent.py"), 0700);
+
+        org.json.JSONObject request = buildRescueAgentRequest(userText);
+        ssh.uploadText(requestPath, request.toString(), 0600);
+
+        ui.post(() -> setStatus("Oracle Rescue Agent 正在本機呼叫 LLM 並操作工具…"));
+        String cmd = "python3 " + DiagnosticCommands.shellQuote(agentPath) + " --request " + DiagnosticCommands.shellQuote(requestPath)
+            + "; RC=$?; rm -f " + DiagnosticCommands.shellQuote(requestPath) + "; exit $RC";
+        CommandResult r = ssh.runCommand(cmd, 900000);
+        String out = maskSensitive(r.asText());
+        appLog("ORACLE RESCUE AGENT｜exit=" + r.exitCode + "｜timedOut=" + r.timedOut + "｜長度=" + out.length());
+        store.appendHistory(new RepairHistory(now(), "Oracle Rescue Agent", out));
+        if (r.exitCode != 0 || r.timedOut) {
+            return "Oracle Rescue Agent 執行失敗或逾時。\n\n```text\n" + limit(out, 30000) + "\n```";
+        }
+        return r.stdout == null || r.stdout.trim().isEmpty() ? out : maskSensitive(r.stdout.trim());
+    }
+
+    private String remoteRescueAgentDir() {
+        String user = serverSettings == null || serverSettings.username == null ? "ubuntu" : serverSettings.username.trim();
+        if (user.length() == 0) user = "ubuntu";
+        if ("root".equals(user)) return "/root/.oracle_ai_rescue";
+        return "/home/" + user.replaceAll("[^A-Za-z0-9._-]", "") + "/.oracle_ai_rescue";
+    }
+
+    private String readAssetText(String name) throws Exception {
+        try (InputStream in = getAssets().open(name)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
+            return out.toString(StandardCharsets.UTF_8.name());
+        }
+    }
+
+    private org.json.JSONObject buildRescueAgentRequest(String userText) throws Exception {
+        org.json.JSONObject root = new org.json.JSONObject();
+        root.put("version", "2.0.0");
+        root.put("question", userText);
+        root.put("system_prompt", runtimeConfig == null ? "" : runtimeConfig.systemPrompt);
+        root.put("max_steps", 10);
+        root.put("main_model", modelConfigJson("main", modelSettings));
+
+        org.json.JSONArray fallbacks = new org.json.JSONArray();
+        ModelSettings google = store.loadModelFor("gemini");
+        if (google != null && google.apiKey != null && !google.apiKey.trim().isEmpty()) fallbacks.put(modelConfigJson("Google fallback", google));
+        ModelSettings nimVerifier = nimVerifier31BSettings();
+        if (nimVerifier != null && nimVerifier.apiKey != null && !nimVerifier.apiKey.trim().isEmpty()) fallbacks.put(modelConfigJson("NIM 31B fallback", nimVerifier));
+        root.put("fallback_models", fallbacks);
+        root.put("verifier_google", modelConfigJson("Google 31B verifier", googleVerifier31BSettings()));
+        root.put("verifier_nim", modelConfigJson("NIM 31B verifier", nimVerifier31BSettings()));
+        return root;
+    }
+
+    private org.json.JSONObject modelConfigJson(String label, ModelSettings m) throws Exception {
+        org.json.JSONObject o = new org.json.JSONObject();
+        if (m == null) m = new ModelSettings();
+        o.put("label", label + " / " + (m.modelName == null ? "" : m.modelName));
+        o.put("provider", m.provider == null ? "custom" : m.provider);
+        o.put("model", m.modelName == null ? "" : m.modelName);
+        o.put("base_url", m.baseUrl == null ? "" : m.baseUrl);
+        o.put("api_key", m.apiKey == null ? "" : m.apiKey);
+        o.put("temperature", m.temperature);
+        return o;
     }
 
     private String runOracleToolAgent(String userText) {
@@ -1771,6 +1853,25 @@ public class MainActivity extends Activity {
 
     private void showRepairPage() {
         LinearLayout box = page("維修");
+        addSection(box, "Oracle Rescue Agent v2.0");
+        box.addView(label("這是雲端本機 Agent 架構：App 只透過 SSH 安裝/啟動 Agent；LLM 在 Oracle 主機內直接調用本機工具、讀檔、修檔、測試、31B 驗證與回滾。", 14, false));
+        Button installAgent = button("安裝/更新 Oracle Rescue Agent 到雲端");
+        installAgent.setOnClickListener(v -> runTask("正在安裝/更新 Oracle Rescue Agent…", () -> {
+            SshClient ssh = new SshClient(serverSettings);
+            String dir = remoteRescueAgentDir();
+            ssh.runCommand("mkdir -p " + DiagnosticCommands.shellQuote(dir) + " && chmod 700 " + DiagnosticCommands.shellQuote(dir), 30000);
+            ssh.uploadText(dir + "/oracle_rescue_agent.py", readAssetText("oracle_rescue_agent.py"), 0700);
+            ui.post(() -> showTextDialog("Oracle Rescue Agent 已安裝", "已安裝到：\n" + dir + "/oracle_rescue_agent.py\n\n之後在聊天頁詢問甲骨文雲端問題，App 會啟動雲端本機 Agent。"));
+        }));
+        box.addView(installAgent);
+
+        Button testAgent = button("測試 Oracle Rescue Agent：只詢問目前目錄與主機");
+        testAgent.setOnClickListener(v -> runTask("正在測試 Oracle Rescue Agent…", () -> {
+            String out = runOracleRescueAgent("請只用 ssh_exec 執行 pwd && whoami && hostname，然後 final 回答結果");
+            ui.post(() -> showTextDialog("Oracle Rescue Agent 測試結果", out));
+        }));
+        box.addView(testAgent);
+
         addSection(box, "一鍵診斷");
         Button diag = button("一鍵診斷 Oracle Cloud 並交給 AI 分析");
         diag.setOnClickListener(v -> runDiagnostics());
@@ -2243,7 +2344,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("# 甲骨文雲端AI 問題回報\n\n");
         sb.append("- 產生時間：").append(now()).append(" UTC+8\n");
-        sb.append("- App 版本：v1.7.1\n");
+        sb.append("- App 版本：v2.0.0\n");
         sb.append("- 設定版：").append(runtimeConfig == null ? "未知" : runtimeConfig.version).append("\n\n");
 
         sb.append("## 目前模型設定\n\n");
