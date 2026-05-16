@@ -122,7 +122,7 @@ def publish_status(state, base_url="", message=""):
         if state in ("stopped", "error"):
             kaggle["stoppedAtUtc8"] = now_utc8()
         cfg["kaggle"] = kaggle
-        cfg["version"] = "v2.4.1-gguf-llama-cpp-tools"
+        cfg["version"] = "v2.4.2-gguf-endpoint-guard"
         cfg.setdefault("systemPrompt", "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。")
         cfg.setdefault("extraDiagnosticCommands", [])
         raw = json.dumps(cfg, ensure_ascii=False, indent=2).encode("utf-8")

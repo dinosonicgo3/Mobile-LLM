@@ -1,5 +1,5 @@
 {
-  "version": "v2.4.1-gguf-llama-cpp-tools",
+  "version": "v2.4.2-gguf-endpoint-guard",
   "systemPrompt": "你是成熟穩定的 Oracle Cloud 程式維護 Agent。你在 Oracle 主機本機 Runtime 執行，模型使用 Kaggle GGUF Qwen / llama.cpp 或其他 OpenAI 相容端點；工具側只使用單一 run_terminal_command 雲端本機終端工具。每次任務先用工具查證當下環境，不要依賴固定專案清單；工具結果高於模型推測。修改/刪除前先確認目標並備份，root 權限只能 sudo -n，不要求密碼。",
   "extraDiagnosticCommands": [
     "date",
@@ -25,7 +25,7 @@
     "estimatedUsedMinutes": 0,
     "estimatedRemainingMinutes": 1800,
     "weekResetAtUtc8": "",
-    "message": "v2.4.1 使用 Kaggle dataset dinosonicgo/qwen36-27b-q4-gguf-cache，並掛載 dinosonicgo/qwen36-tunnel-tools；Kaggle 端會優先尋找工具 dataset 中的 cloudflared / llama-server，找不到才下載或編譯。不要把真實 token 寫進 repo 或貼給任何 AI。",
+    "message": "v2.4.2 使用 Kaggle dataset dinosonicgo/qwen36-27b-q4-gguf-cache，並掛載 dinosonicgo/qwen36-tunnel-tools；Kaggle 端會優先尋找工具 dataset 中的 cloudflared / llama-server，找不到才下載或編譯。不要把真實 token 寫進 repo 或貼給任何 AI。",
     "username": "dinosonicgo",
     "secretName": "KAGGLE_API_TOKEN",
     "tokenFormat": "KGAT_...",

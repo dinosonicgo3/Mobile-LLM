@@ -389,7 +389,7 @@ class SecureStore {
         ModelSettings m = new ModelSettings();
         m.provider = provider;
         if ("nim".equals(provider)) { m.baseUrl = "https://integrate.api.nvidia.com/v1"; m.modelName = "meta/llama-3.1-70b-instruct"; }
-        else if ("kaggle".equals(provider)) { m.baseUrl = "https://你的-kaggle-隧道網址/v1"; m.modelName = "qwen36-27b-q4-gguf"; }
+        else if ("kaggle".equals(provider)) { m.baseUrl = ""; m.modelName = "qwen36-27b-q4-gguf"; }
         else if ("local_gemma".equals(provider)) { m.baseUrl = ""; m.modelName = "gemma-4-E2B-it.litertlm"; }
         else if ("custom".equals(provider)) { m.baseUrl = "https://example.com/v1"; m.modelName = "your-model-name"; }
         else { m.baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"; m.modelName = "gemini-2.5-flash"; }

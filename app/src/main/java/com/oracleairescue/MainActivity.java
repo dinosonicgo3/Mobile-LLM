@@ -351,6 +351,9 @@ public class MainActivity extends Activity {
                 store.saveRuntimeConfig(cfg);
                 runtimeConfig = cfg;
                 applyKaggleConfig(cfg, false);
+                if (isKaggleEndpointMissing(modelSettings)) {
+                    throw new IllegalStateException("尚未取得可用的 Kaggle 端點。\n\n目前 App 仍沒有真正的 trycloudflare / ngrok Base URL，所以不能直接聊天。\n\n請先到「Kaggle」頁按「啟動 Kaggle Qwen」，等待 GitHub Actions 與 Kaggle kernel 啟動完成；看到 oracle-ai-rescue-config.json 內 kaggle.state=running 且 baseUrl 有 https://.../v1 後，再回「設定」按「自動同步 Kaggle 端點」。\n\n如果已啟動但仍同步不到，請檢查 GitHub Secrets：KAGGLE_API_TOKEN 與 GH_CONFIG_PAT。若這是私人倉庫，App 內也需要填 GitHub Token 才能讀設定檔。");
+                }
             }
             List<ChatMessage> payload = buildContextMessages(buildSystemPromptWithOracleContext(runtimeConfig.systemPrompt, oraclePack), chatMessages, modelSettings.maxContextCharacters);
             if (oraclePack.used) {

@@ -26,6 +26,7 @@ class LlmClient {
 
     String sendChat(ModelSettings settings, List<ChatMessage> messages) throws Exception {
         if (settings.baseUrl.trim().isEmpty()) throw new IllegalArgumentException("請先輸入 Base URL。");
+        if (isPlaceholderBaseUrl(settings.baseUrl)) throw new IllegalArgumentException("目前 Base URL 仍是占位文字，還沒有同步到真正的 Kaggle 隧道網址。請先到 Kaggle 頁啟動 worker，再到設定頁按『自動同步 Kaggle 端點』。");
         if (settings.modelName.trim().isEmpty()) throw new IllegalArgumentException("請先選擇或輸入模型名稱。");
         if (!"kaggle".equals(settings.provider) && !"local_gemma".equals(settings.provider) && settings.apiKey.trim().isEmpty()) throw new IllegalArgumentException("請先輸入 API Key。");
 
@@ -280,6 +281,12 @@ class LlmClient {
 
     private static void addAuth(Request.Builder b, String key) {
         if (key != null && key.trim().length() > 0) b.addHeader("Authorization", "Bearer " + key.trim());
+    }
+
+    private static boolean isPlaceholderBaseUrl(String s) {
+        if (s == null) return true;
+        String x = s.trim();
+        return x.length() == 0 || x.contains("你的-kaggle") || x.contains("隧道網址") || x.contains("example.com") || x.contains("xn---kaggle--");
     }
 
     private static String trim(String url) { return url == null ? "" : url.trim().replaceAll("/+$", ""); }
