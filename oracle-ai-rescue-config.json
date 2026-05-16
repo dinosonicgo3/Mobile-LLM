@@ -8,7 +8,7 @@
     "uptime"
   ],
   "kaggle": {
-    "state": "running",
+    "state": "stopped",
     "baseUrl": "https://observation-perfectly-surge-asbestos.trycloudflare.com/v1",
     "apiKey": "",
     "defaultModel": "qwen36-27b-q4-gguf",
@@ -18,15 +18,15 @@
       "qwen3.6-27b-q4",
       "qwen3.6-27b"
     ],
-    "lastHeartbeatUtc8": "2026-05-16 22:46:10 UTC+8",
+    "lastHeartbeatUtc8": "2026-05-16 23:01:10 UTC+8",
     "startedAtUtc8": "2026-05-16 22:43:07 UTC+8",
-    "stoppedAtUtc8": "",
+    "stoppedAtUtc8": "2026-05-16 23:01:10 UTC+8",
     "idleShutdownMinutes": 15,
     "weeklyQuotaHours": 30,
-    "estimatedUsedMinutes": 10,
-    "estimatedRemainingMinutes": 1790,
+    "estimatedUsedMinutes": 25,
+    "estimatedRemainingMinutes": 1775,
     "weekResetAtUtc8": "2026-05-23 08:00:00 UTC+8",
-    "message": "Kaggle GGUF Qwen API running via llama.cpp; n_gpu_layers=80; ctx=4096",
+    "message": "proxy exited with code 0",
     "username": "dinosonicgo",
     "secretName": "KAGGLE_API_TOKEN",
     "tokenFormat": "KGAT_...",
@@ -35,7 +35,7 @@
     "toolsDatasetSlug": "dinosonicgo/qwen36-tunnel-tools",
     "weekKey": "2026-05-16",
     "baseUsedBeforeThisSession": 0,
-    "status": "running"
+    "status": "stopped"
   },
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
