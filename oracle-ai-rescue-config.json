@@ -1,5 +1,5 @@
 {
-  "version": "v2.4.2-gguf-endpoint-guard",
+  "version": "v2.4.8-kaggle-start-and-preflight",
   "systemPrompt": "你是成熟穩定的 Oracle Cloud 程式維護 Agent。你在 Oracle 主機本機 Runtime 執行，模型使用 Kaggle GGUF Qwen / llama.cpp 或其他 OpenAI 相容端點；工具側只使用單一 run_terminal_command 雲端本機終端工具。每次任務先用工具查證當下環境，不要依賴固定專案清單；工具結果高於模型推測。修改/刪除前先確認目標並備份，root 權限只能 sudo -n，不要求密碼。",
   "extraDiagnosticCommands": [
     "date",
@@ -8,34 +8,30 @@
     "uptime"
   ],
   "kaggle": {
-    "state": "stopped",
-    "baseUrl": "https://observation-perfectly-surge-asbestos.trycloudflare.com/v1",
+    "state": "not_started",
+    "baseUrl": "",
     "apiKey": "",
     "defaultModel": "qwen36-27b-q4-gguf",
     "models": [
       "qwen36-27b-q4-gguf",
-      "qwen36-27b-q4-gguf",
       "qwen3.6-27b-q4",
       "qwen3.6-27b"
     ],
-    "lastHeartbeatUtc8": "2026-05-16 23:01:10 UTC+8",
-    "startedAtUtc8": "2026-05-16 22:43:07 UTC+8",
-    "stoppedAtUtc8": "2026-05-16 23:01:10 UTC+8",
-    "idleShutdownMinutes": 15,
+    "lastHeartbeatUtc8": "",
+    "startedAtUtc8": "",
+    "stoppedAtUtc8": "",
+    "idleShutdownMinutes": 10,
     "weeklyQuotaHours": 30,
-    "estimatedUsedMinutes": 25,
-    "estimatedRemainingMinutes": 1775,
-    "weekResetAtUtc8": "2026-05-23 08:00:00 UTC+8",
-    "message": "proxy exited with code 0",
+    "estimatedUsedMinutes": 0,
+    "estimatedRemainingMinutes": 1800,
+    "weekResetAtUtc8": "",
+    "message": "v2.4.8：啟動前會檢查 GH_CONFIG_PAT；Kaggle push 會修正 title/id slug 不一致，並在 409 Conflict 時改用本次 run 專屬 kernel slug 重試。",
     "username": "dinosonicgo",
     "secretName": "KAGGLE_API_TOKEN",
     "tokenFormat": "KGAT_...",
     "datasetSlug": "dinosonicgo/qwen36-27b-q4-gguf-cache",
     "backend": "llama.cpp llama-server GGUF + qwen36-tunnel-tools",
-    "toolsDatasetSlug": "dinosonicgo/qwen36-tunnel-tools",
-    "weekKey": "2026-05-16",
-    "baseUsedBeforeThisSession": 0,
-    "status": "stopped"
+    "toolsDatasetSlug": "dinosonicgo/qwen36-tunnel-tools"
   },
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
@@ -172,6 +168,7 @@
     "finalGuard": "single cloud-local terminal tool loop + static guard; mutating repairs still require backup/test/31B verification."
   },
   "release_notes": [
+    "v2.4.8：修正 Kaggle kernel title/id slug 不一致造成的 409 Conflict；若固定 slug 仍衝突，會用本次 GitHub run 專屬 slug 重試。",
     "v2.4.4：修正端點未寫回時整個 Kaggle worker 死掉的問題；加入 GitHub Actions 狀態檢查與 App 內下載安裝 APK。",
     "v2.4.0：Kaggle 改為 GGUF / llama.cpp；掛載 dinosonicgo/qwen36-27b-q4-gguf-cache；閒置預設 10 分鐘關閉；Oracle Agent 允許 Kaggle 空 API Key 並使用 JSON 終端工具協議。",
     "v2.3.3：保留雲端 Runtime，但化繁為簡成單一 run_terminal_command 本機終端工具；不寫死專案清單，每次由模型先查證當下 Oracle 環境，再維護。"
@@ -184,8 +181,8 @@
     "v2.3.3：修正 Gemini/Gemma 在 OpenAI 相容端點使用 stream+tools 會 HTTP 500 的問題；Gemini 改用同主模型短 JSON 終端協議，NIM 保持原生串流工具；同時修正 run_terminal_command 未被無幻覺守門視為已查證、以及空回覆/無工具多輪循環。"
   ],
   "latestFix": {
-    "version": "v2.4.4",
-    "fix": "端點診斷增強：Kaggle publish_status 改為容錯，端點會印在 log；App 可查最近 workflow 狀態；更新頁可在 App 內下載並叫出 Android 安裝器。"
+    "version": "v2.4.8",
+    "fix": "Kaggle 啟動前檢查 GH_CONFIG_PAT 寫入權限；手機按啟動後自動等待端點；Kaggle 頁可手動貼上 KAGGLE_BASE_URL。"
   },
   "history": [
     "v2.4.1：Kaggle kernel 額外掛載 dinosonicgo/qwen36-tunnel-tools；worker 優先使用工具 dataset 的 cloudflared / llama-server，找不到才 fallback。"

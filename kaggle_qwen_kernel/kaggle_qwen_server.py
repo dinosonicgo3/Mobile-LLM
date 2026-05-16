@@ -118,6 +118,7 @@ def publish_status(state, base_url="", message=""):
                 "estimatedRemainingMinutes": remaining,
                 "weekResetAtUtc8": week_reset_utc8().strftime("%Y-%m-%d %H:%M:%S UTC+8"),
                 "message": message,
+                "workerVersion": "v2.4.8",
                 "datasetSlug": "dinosonicgo/qwen36-27b-q4-gguf-cache",
                 "toolsDatasetSlug": "dinosonicgo/qwen36-tunnel-tools",
                 "modelSource": MODEL_SOURCE,
@@ -128,7 +129,7 @@ def publish_status(state, base_url="", message=""):
             if state in ("stopped", "error"):
                 kaggle["stoppedAtUtc8"] = now_utc8()
             cfg["kaggle"] = kaggle
-            cfg["version"] = "v2.4.4-endpoint-diagnostics-self-update"
+            cfg["version"] = "v2.4.8-kaggle-preflight-autowait"
             cfg.setdefault("systemPrompt", "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。")
             cfg.setdefault("extraDiagnosticCommands", [])
             raw = json.dumps(cfg, ensure_ascii=False, indent=2).encode("utf-8")

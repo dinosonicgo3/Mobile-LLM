@@ -26,7 +26,7 @@ on:
       model_source:
         description: 'Kaggle Model source，可留空；格式 username/model/framework/variation/version'
         required: false
-        default: 'dinosonicgo/qwen36-gguf-hermes/gguf/qwen36-gguf-hermes/1'
+        default: ''
 
 permissions:
   contents: read
@@ -125,7 +125,7 @@ jobs:
               model_sources.append(model_source)
           meta = {
               'id': f"{os.environ['KAGGLE_USERNAME']}/mobile-llm-kaggle-qwen",
-              'title': 'Mobile LLM Kaggle Qwen API',
+              'title': 'mobile-llm-kaggle-qwen',
               'code_file': 'kaggle_qwen_server.py',
               'language': 'python',
               'kernel_type': 'script',
@@ -140,22 +140,106 @@ jobs:
           pathlib.Path('kaggle_runtime/kernel-metadata.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
           PY
 
+
+
+      - name: Preflight GH_CONFIG_PAT can write config
+        env:
+          GH_CONFIG_PAT: ${{ secrets.GH_CONFIG_PAT }}
+          GH_OWNER: dinosonicgo3
+          GH_REPO: Mobile-LLM
+          GH_BRANCH: main
+          CONFIG_PATH: oracle-ai-rescue-config.json
+        run: |
+          python - <<'PY'
+          import base64, json, os, urllib.request, urllib.error, datetime
+          token = os.environ.get('GH_CONFIG_PAT', '').strip()
+          if not token:
+              raise SystemExit('Missing GH_CONFIG_PAT. It must be a GitHub token with Contents: Read and write for this repo.')
+          owner=os.environ['GH_OWNER']; repo=os.environ['GH_REPO']; branch=os.environ['GH_BRANCH']; path=os.environ['CONFIG_PATH']
+          api = f'https://api.github.com/repos/{owner}/{repo}/contents/{path}'
+          def req(method, url, data=None):
+              body = None if data is None else json.dumps(data).encode('utf-8')
+              r = urllib.request.Request(url, data=body, method=method)
+              r.add_header('Authorization', 'Bearer ' + token)
+              r.add_header('Accept', 'application/vnd.github+json')
+              r.add_header('X-GitHub-Api-Version', '2022-11-28')
+              if body is not None:
+                  r.add_header('Content-Type', 'application/json')
+              try:
+                  with urllib.request.urlopen(r, timeout=30) as resp:
+                      raw = resp.read().decode('utf-8')
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as e:
+                  detail = e.read().decode('utf-8', 'ignore')
+                  raise SystemExit(f'GH_CONFIG_PAT preflight failed: HTTP {e.code}\n{detail}\n\n請到 GitHub repo → Settings → Secrets and variables → Actions，確認 GH_CONFIG_PAT 是 Fine-grained PAT，且對 dinosonicgo3/Mobile-LLM 有 Contents: Read and write。')
+          current = req('GET', api + '?ref=' + branch)
+          raw = base64.b64decode(current.get('content','')).decode('utf-8')
+          cfg = json.loads(raw) if raw.strip() else {}
+          kaggle = cfg.setdefault('kaggle', {})
+          kaggle['lastPreflightUtc'] = datetime.datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+          cfg['kaggle'] = kaggle
+          payload = {
+              'message': 'Preflight Kaggle endpoint writer permission',
+              'content': base64.b64encode(json.dumps(cfg, ensure_ascii=False, indent=2).encode('utf-8')).decode('ascii'),
+              'branch': branch,
+              'sha': current.get('sha')
+          }
+          req('PUT', api, payload)
+          print('GH_CONFIG_PAT preflight OK: config file is writable.')
+          PY
+
       - name: Push Kaggle kernel
+        env:
+          KAGGLE_KERNEL_OWNER: dinosonicgo
+          GITHUB_RUN_ID_FOR_SLUG: ${{ github.run_id }}
         run: |
           # GGUF 由 llama.cpp 啟動；T4 可用但 27B Q4 可能會視顯存自動降低 GPU offload。
-          # 先嘗試同時掛載 Kaggle Model；若 model_sources 路徑不完整或版本不符，移除 model_sources 後自動退回 dataset-only。
+          # v2.4.8：修正 Kaggle 409 Conflict。原因通常是 kernel title 產生的 slug 與 id 不一致，
+          # 或舊 kernel 正在執行造成同一個 slug 不能被覆寫。
+          # 第一輪用固定 slug；若仍 409，第二輪改用本次 GitHub run 專屬 slug，避免衝突。
+          echo "=== Kaggle metadata before push ==="
+          cat kaggle_runtime/kernel-metadata.json
+          echo "=== Push stable Kaggle kernel slug ==="
           set +e
           kaggle kernels push -p kaggle_runtime --accelerator NvidiaTeslaT4 --timeout 43200
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
-            echo "First push failed. Retrying without model_sources, using dataset_sources only."
+            echo "Stable push failed. Retrying dataset-only with the same exact title/id slug."
             python - <<'PY'
           import json, pathlib
           p = pathlib.Path('kaggle_runtime/kernel-metadata.json')
           meta = json.loads(p.read_text(encoding='utf-8'))
           meta['model_sources'] = []
+          # The Kaggle title must resolve to the same slug as metadata id.
+          meta['id'] = 'dinosonicgo/mobile-llm-kaggle-qwen'
+          meta['title'] = 'mobile-llm-kaggle-qwen'
           p.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
           PY
+            echo "=== Kaggle metadata before dataset-only retry ==="
+            cat kaggle_runtime/kernel-metadata.json
+            set +e
+            kaggle kernels push -p kaggle_runtime --accelerator NvidiaTeslaT4 --timeout 43200
+            rc=$?
+            set -e
+          fi
+          if [ $rc -ne 0 ]; then
+            echo "Dataset-only stable push still failed. Retrying with a unique per-run kernel slug to avoid Kaggle 409 conflict."
+            python - <<'PY'
+          import json, os, pathlib, re
+          p = pathlib.Path('kaggle_runtime/kernel-metadata.json')
+          meta = json.loads(p.read_text(encoding='utf-8'))
+          owner = os.environ.get('KAGGLE_KERNEL_OWNER', 'dinosonicgo')
+          run_id = os.environ.get('GITHUB_RUN_ID_FOR_SLUG') or os.environ.get('GITHUB_RUN_ID') or 'manual'
+          run_id = re.sub(r'[^a-zA-Z0-9-]+', '-', run_id).strip('-').lower() or 'manual'
+          slug = f'mobile-llm-kaggle-qwen-{run_id}'
+          meta['id'] = f'{owner}/{slug}'
+          meta['title'] = slug
+          meta['model_sources'] = []
+          p.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+          print(f'Using unique Kaggle kernel id: {owner}/{slug}')
+          PY
+            echo "=== Kaggle metadata before unique-slug retry ==="
+            cat kaggle_runtime/kernel-metadata.json
             kaggle kernels push -p kaggle_runtime --accelerator NvidiaTeslaT4 --timeout 43200
           fi

@@ -1,0 +1,1 @@
+v2.4.7: Kaggle 啟動前檢查 GH_CONFIG_PAT 寫入權限；App 啟動 Kaggle 後自動等待端點；Kaggle 頁加入手動端點填入入口。

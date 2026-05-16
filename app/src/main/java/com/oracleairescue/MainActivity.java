@@ -91,7 +91,7 @@ public class MainActivity extends Activity {
 
     private final String[] providerLabels = new String[] {"Google Gemini", "NVIDIA NIM", "Kaggle Qwen / OpenAI 相容", "本機 Gemma 4", "自訂 OpenAI 相容"};
     private final String[] providerCodes = new String[] {"gemini", "nim", "kaggle", "local_gemma", "custom"};
-    private static final String APP_VERSION_FALLBACK = "2.4.6";
+    private static final String APP_VERSION_FALLBACK = "2.4.8";
     private static final String SELF_UPDATE_PREFS = "self_update";
     private static final String KEY_PENDING_UPDATE_APK_PATH = "pending_update_apk_path";
     private static final String KEY_PENDING_UPDATE_TAG = "pending_update_tag";
@@ -1991,7 +1991,8 @@ public class MainActivity extends Activity {
                     .put("tools_dataset_slug", "dinosonicgo/qwen36-tunnel-tools")
                     .put("model_source", "dinosonicgo/qwen36-gguf-hermes/gguf/qwen36-gguf-hermes/1");
                 llm.dispatchWorkflow(updateSettings, updateSettings.kaggleStartWorkflow, inputs);
-                ui.post(() -> showTextDialog("已送出啟動要求", "GitHub Actions 已接受啟動要求。\n\n請等待數分鐘後按『同步 Kaggle 狀態/端點』。v2.4.4 會同時查 GitHub Actions 最近一次啟動狀態；若端點沒有寫回 GitHub，請打開最近 workflow 的 log，搜尋 KAGGLE_BASE_URL 或 MANUAL_KAGGLE_BASE_URL，將該網址填到設定頁 Base URL。"));
+                ui.post(() -> showTextDialog("已送出啟動要求", "GitHub Actions 已接受啟動要求。\n\nv2.4.8 會自動等待 Kaggle worker 把端點寫回 GitHub。模型載入可能需要數分鐘；若等待逾時，請到 Kaggle kernel log 搜尋 KAGGLE_BASE_URL，或確認 GH_CONFIG_PAT 的 Contents: Read and write 權限。"));
+                waitForKaggleEndpointAfterDispatch(state);
             });
         }));
         Button stop = button("停止 Kaggle API");
@@ -2003,6 +2004,33 @@ public class MainActivity extends Activity {
             });
         }));
         row1.addView(start, weight()); row1.addView(stop, weight()); box.addView(row1);
+
+        EditText manualBase = edit("手動貼上 Kaggle Base URL，例如 https://xxxx.trycloudflare.com/v1", false);
+        box.addView(manualBase);
+        Button applyManual = button("套用手動 Kaggle 端點");
+        applyManual.setOnClickListener(v -> {
+            String b = manualBase.getText().toString().trim().replaceAll("/+$", "");
+            if (b.endsWith("/v1")) {}
+            else if (b.startsWith("https://")) b = b + "/v1";
+            if (!b.startsWith("https://") || !(b.contains("trycloudflare.com") || b.contains("ngrok") || b.contains("loca.lt") || b.contains("/v1"))) {
+                showTextDialog("端點格式不正確", "請貼上 Kaggle log 裡的 KAGGLE_BASE_URL，格式通常是：\nhttps://xxxx.trycloudflare.com/v1");
+                return;
+            }
+            ModelSettings kg = store.loadModelFor("kaggle");
+            kg.provider = "kaggle";
+            kg.baseUrl = b;
+            if (kg.modelName == null || kg.modelName.trim().isEmpty()) kg.modelName = "qwen36-27b-q4-gguf";
+            store.saveModel(kg);
+            runtimeConfig.kaggleBaseUrl = b;
+            runtimeConfig.kaggleState = "manual";
+            runtimeConfig.kaggleMessage = "使用者從 Kaggle log 手動貼上端點";
+            store.saveRuntimeConfig(runtimeConfig);
+            modelSettings = kg;
+            state.setText(kaggleStatusText(runtimeConfig));
+            showTextDialog("已套用手動 Kaggle 端點", "Base URL：" + b + "\n\n現在可回聊天頁選 Kaggle 模型測試。若仍連不上，代表 Kaggle worker 可能已因閒置或錯誤停止。 ");
+        });
+        box.addView(applyManual);
+        box.addView(label("手動端點去哪裡找：Kaggle → Code / Notebooks → mobile-llm-kaggle-qwen → 最近一次執行的 Logs，搜尋 KAGGLE_BASE_URL 或 MANUAL_KAGGLE_BASE_URL，複製 https://.../v1。", 13, false));
 
         Button checkWorkflow = button("檢查最近 GitHub Actions 啟動狀態");
         checkWorkflow.setOnClickListener(v -> { save.performClick(); runTask("正在檢查最近 workflow…", () -> {
@@ -2046,6 +2074,62 @@ public class MainActivity extends Activity {
                     showTextDialog("Kaggle 狀態", msg);
                 }
             });
+        });
+    }
+
+    private void waitForKaggleEndpointAfterDispatch(TextView target) throws Exception {
+        long deadline = System.currentTimeMillis() + 20L * 60L * 1000L;
+        int attempt = 0;
+        String lastError = "";
+        WorkflowStatus lastWorkflow = null;
+        while (System.currentTimeMillis() < deadline) {
+            Thread.sleep(attempt == 0 ? 45000L : 30000L);
+            attempt++;
+            try {
+                RuntimeConfig cfg = llm.fetchRuntimeConfig(updateSettings);
+                store.backupRuntimeConfig();
+                store.saveRuntimeConfig(cfg);
+                runtimeConfig = cfg;
+                boolean ok = applyKaggleConfig(cfg, true);
+                final String progress = kaggleStatusText(cfg);
+                final int round = attempt;
+                ui.post(() -> {
+                    target.setText(progress);
+                    setStatus("等待 Kaggle 端點…第 " + round + " 次檢查");
+                });
+                if (ok) {
+                    ui.post(() -> showTextDialog("Kaggle 端點已同步", "Base URL：" + modelSettings.baseUrl + "\n模型：" + modelSettings.modelName + "\n\n現在可回聊天頁選 Kaggle 模型使用。"));
+                    return;
+                }
+            } catch (Exception e) {
+                lastError = e.getClass().getSimpleName() + "：" + e.getMessage();
+            }
+            if (attempt % 2 == 0) {
+                try {
+                    lastWorkflow = llm.latestWorkflowStatus(updateSettings, updateSettings.kaggleStartWorkflow);
+                    final WorkflowStatus wf = lastWorkflow;
+                    ui.post(() -> setStatus("等待 Kaggle 端點…GitHub Actions：" + wf.displayTitle()));
+                    if ("completed".equalsIgnoreCase(wf.status) && "failure".equalsIgnoreCase(wf.conclusion)) {
+                        ui.post(() -> showWorkflowStatusDialog(wf));
+                        return;
+                    }
+                } catch (Exception e) {
+                    lastError = e.getClass().getSimpleName() + "：" + e.getMessage();
+                }
+            }
+        }
+        final String err = lastError;
+        final WorkflowStatus wf = lastWorkflow;
+        ui.post(() -> {
+            String msg = "已等待 20 分鐘，但 GitHub 設定檔仍沒有 kaggle.baseUrl。\n\n" +
+                "最常見原因：\n" +
+                "1. GitHub Secret GH_CONFIG_PAT 沒有 Contents: Read and write。\n" +
+                "2. Kaggle kernel 尚未成功啟動或找不到 GGUF / llama-server。\n" +
+                "3. cloudflared 沒有產生 trycloudflare 網址。\n\n" +
+                "請到 Kaggle → Code / Notebooks → mobile-llm-kaggle-qwen → Logs，搜尋 KAGGLE_BASE_URL 或 MANUAL_KAGGLE_BASE_URL；找到 https://.../v1 後，貼到本頁『手動貼上 Kaggle Base URL』。";
+            if (err != null && err.length() > 0) msg += "\n\n最後錯誤：" + err;
+            if (wf != null) msg += "\n\n最近 workflow：#" + wf.runNumber + "｜" + wf.displayTitle();
+            showTextDialog("尚未取得 Kaggle 端點", msg);
         });
     }
 
@@ -2581,7 +2665,7 @@ public class MainActivity extends Activity {
         box.addView(rollback);
 
         addSection(box, "APK 版本更新與回滾");
-        box.addView(label("App 會讀取 GitHub Releases。v2.4.6 起，點選版本後會自動下載 APK，安裝成功後會清理下載的 APK，並優先使用 Android PackageInstaller 嘗試靜默自我更新；若你的手機系統仍要求確認，會自動降級到一般安裝器畫面。若新版壞掉，可回到 Releases 下載舊版 APK 回滾。", 14, false));
+        box.addView(label("App 會讀取 GitHub Releases。v2.4.8 起，點選版本後會自動下載 APK，安裝成功後會清理下載的 APK，並優先使用 Android PackageInstaller 嘗試靜默自我更新；若你的手機系統仍要求確認，會自動降級到一般安裝器畫面。若新版壞掉，可回到 Releases 下載舊版 APK 回滾。", 14, false));
         Button releases = button("查看版本 / 點選即嘗試靜默更新");
         releases.setOnClickListener(v -> { save.performClick(); runTask("正在讀取 GitHub Releases…", () -> {
             List<ReleaseInfo> list = llm.listReleases(updateSettings);
