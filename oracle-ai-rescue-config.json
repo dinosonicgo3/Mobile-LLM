@@ -1,5 +1,5 @@
 {
-  "version": "v2.4.2-gguf-endpoint-guard",
+  "version": "v2.4.4-endpoint-diagnostics-self-update",
   "systemPrompt": "你是成熟穩定的 Oracle Cloud 程式維護 Agent。你在 Oracle 主機本機 Runtime 執行，模型使用 Kaggle GGUF Qwen / llama.cpp 或其他 OpenAI 相容端點；工具側只使用單一 run_terminal_command 雲端本機終端工具。每次任務先用工具查證當下環境，不要依賴固定專案清單；工具結果高於模型推測。修改/刪除前先確認目標並備份，root 權限只能 sudo -n，不要求密碼。",
   "extraDiagnosticCommands": [
     "date",
@@ -8,34 +8,30 @@
     "uptime"
   ],
   "kaggle": {
-    "state": "starting",
+    "state": "not_started",
     "baseUrl": "",
     "apiKey": "",
     "defaultModel": "qwen36-27b-q4-gguf",
     "models": [
       "qwen36-27b-q4-gguf",
-      "qwen36-27b-q4-gguf",
       "qwen3.6-27b-q4",
       "qwen3.6-27b"
     ],
-    "lastHeartbeatUtc8": "2026-05-16 22:35:58 UTC+8",
-    "startedAtUtc8": "2026-05-16 22:35:58 UTC+8",
+    "lastHeartbeatUtc8": "",
+    "startedAtUtc8": "",
     "stoppedAtUtc8": "",
-    "idleShutdownMinutes": 15,
+    "idleShutdownMinutes": 10,
     "weeklyQuotaHours": 30,
     "estimatedUsedMinutes": 0,
     "estimatedRemainingMinutes": 1800,
-    "weekResetAtUtc8": "2026-05-23 08:00:00 UTC+8",
-    "message": "Searching GGUF model and preparing llama.cpp",
+    "weekResetAtUtc8": "",
+    "message": "v2.4.4：Kaggle worker 會把 KAGGLE_BASE_URL 印到 log；GitHub 寫回設定失敗時不再殺死 server。App 會查最近 GitHub Actions 狀態，並支援在 App 內下載安裝 Release APK。",
     "username": "dinosonicgo",
     "secretName": "KAGGLE_API_TOKEN",
     "tokenFormat": "KGAT_...",
     "datasetSlug": "dinosonicgo/qwen36-27b-q4-gguf-cache",
     "backend": "llama.cpp llama-server GGUF + qwen36-tunnel-tools",
-    "toolsDatasetSlug": "dinosonicgo/qwen36-tunnel-tools",
-    "weekKey": "2026-05-16",
-    "baseUsedBeforeThisSession": 0,
-    "status": "starting"
+    "toolsDatasetSlug": "dinosonicgo/qwen36-tunnel-tools"
   },
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
