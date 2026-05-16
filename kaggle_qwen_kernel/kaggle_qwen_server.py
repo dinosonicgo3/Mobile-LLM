@@ -21,6 +21,7 @@ GH_REPO = "__GH_REPO__"
 GH_BRANCH = "__GH_BRANCH__"
 CONFIG_PATH = "__CONFIG_PATH__"
 MODEL_NAME = "__MODEL_NAME__"
+MODEL_SOURCE = "__MODEL_SOURCE__"
 IDLE_MINUTES = int("__IDLE_MINUTES__")
 WEEKLY_QUOTA_HOURS = int("__WEEKLY_QUOTA_HOURS__")
 API_KEY = os.environ.get("KAGGLE_QWEN_API_KEY", "")
@@ -84,56 +85,67 @@ def load_config():
 
 
 def publish_status(state, base_url="", message=""):
-    with state_lock:
-        cfg, sha = load_config()
-        kaggle = cfg.get("kaggle") or {}
-        week_key = current_week_key()
-        if kaggle.get("weekKey") != week_key:
-            kaggle["estimatedUsedMinutes"] = 0
-            kaggle["weekKey"] = week_key
-        elapsed_min = int((time.time() - start_monotonic) / 60)
-        previous = int(kaggle.get("baseUsedBeforeThisSession", kaggle.get("estimatedUsedMinutes", 0)) or 0)
-        if "baseUsedBeforeThisSession" not in kaggle:
-            kaggle["baseUsedBeforeThisSession"] = previous
-        used = min(WEEKLY_QUOTA_HOURS * 60, previous + elapsed_min)
-        remaining = max(0, WEEKLY_QUOTA_HOURS * 60 - used)
+    # 發布狀態到 GitHub 只是「同步用」，不能讓同步失敗導致 Kaggle API 直接死掉。
+    # 若 GH_CONFIG_PAT 權限錯誤或 GitHub API 短暫失敗，仍繼續啟動 server，並把端點印在 Kaggle / GitHub Actions log 讓使用者可手動填入。
+    try:
+        with state_lock:
+            cfg, sha = load_config()
+            kaggle = cfg.get("kaggle") or {}
+            week_key = current_week_key()
+            if kaggle.get("weekKey") != week_key:
+                kaggle["estimatedUsedMinutes"] = 0
+                kaggle["weekKey"] = week_key
+            elapsed_min = int((time.time() - start_monotonic) / 60)
+            previous = int(kaggle.get("baseUsedBeforeThisSession", kaggle.get("estimatedUsedMinutes", 0)) or 0)
+            if "baseUsedBeforeThisSession" not in kaggle:
+                kaggle["baseUsedBeforeThisSession"] = previous
+            used = min(WEEKLY_QUOTA_HOURS * 60, previous + elapsed_min)
+            remaining = max(0, WEEKLY_QUOTA_HOURS * 60 - used)
+            if base_url:
+                kaggle["baseUrl"] = base_url.rstrip("/") + "/v1"
+                kaggle["publicUrl"] = base_url.rstrip("/")
+            kaggle.update({
+                "state": state,
+                "status": state,
+                "apiKey": API_KEY,
+                "defaultModel": MODEL_NAME,
+                "models": [MODEL_NAME, "qwen36-27b-q4-gguf", "qwen3.6-27b-q4", "qwen3.6-27b"],
+                "backend": "llama.cpp llama-server GGUF + qwen36-tunnel-tools",
+                "lastHeartbeatUtc8": now_utc8(),
+                "idleShutdownMinutes": IDLE_MINUTES,
+                "weeklyQuotaHours": WEEKLY_QUOTA_HOURS,
+                "estimatedUsedMinutes": used,
+                "estimatedRemainingMinutes": remaining,
+                "weekResetAtUtc8": week_reset_utc8().strftime("%Y-%m-%d %H:%M:%S UTC+8"),
+                "message": message,
+                "datasetSlug": "dinosonicgo/qwen36-27b-q4-gguf-cache",
+                "toolsDatasetSlug": "dinosonicgo/qwen36-tunnel-tools",
+                "modelSource": MODEL_SOURCE,
+            })
+            if state == "starting":
+                kaggle["startedAtUtc8"] = now_utc8()
+                kaggle["stoppedAtUtc8"] = ""
+            if state in ("stopped", "error"):
+                kaggle["stoppedAtUtc8"] = now_utc8()
+            cfg["kaggle"] = kaggle
+            cfg["version"] = "v2.4.4-endpoint-diagnostics-self-update"
+            cfg.setdefault("systemPrompt", "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。")
+            cfg.setdefault("extraDiagnosticCommands", [])
+            raw = json.dumps(cfg, ensure_ascii=False, indent=2).encode("utf-8")
+            payload = {
+                "message": f"Update Kaggle GGUF endpoint {state}",
+                "content": base64.b64encode(raw).decode("ascii"),
+                "branch": GH_BRANCH,
+            }
+            if sha:
+                payload["sha"] = sha
+            gh_api("PUT", f"/repos/{GH_OWNER}/{GH_REPO}/contents/{CONFIG_PATH}", payload)
+            print(f"PUBLISHED_STATUS state={state} baseUrl={(base_url.rstrip('/') + '/v1') if base_url else ''} message={message}", flush=True)
+    except Exception as e:
+        print("WARNING: publish_status failed; server will keep running:", repr(e), flush=True)
         if base_url:
-            kaggle["baseUrl"] = base_url.rstrip("/") + "/v1"
-        kaggle.update({
-            "state": state,
-            "status": state,
-            "apiKey": API_KEY,
-            "defaultModel": MODEL_NAME,
-            "models": [MODEL_NAME, "qwen36-27b-q4-gguf", "qwen3.6-27b-q4", "qwen3.6-27b"],
-            "backend": "llama.cpp llama-server GGUF + qwen36-tunnel-tools",
-            "lastHeartbeatUtc8": now_utc8(),
-            "idleShutdownMinutes": IDLE_MINUTES,
-            "weeklyQuotaHours": WEEKLY_QUOTA_HOURS,
-            "estimatedUsedMinutes": used,
-            "estimatedRemainingMinutes": remaining,
-            "weekResetAtUtc8": week_reset_utc8().strftime("%Y-%m-%d %H:%M:%S UTC+8"),
-            "message": message,
-            "datasetSlug": "dinosonicgo/qwen36-27b-q4-gguf-cache",
-            "toolsDatasetSlug": "dinosonicgo/qwen36-tunnel-tools",
-        })
-        if state == "starting":
-            kaggle["startedAtUtc8"] = now_utc8()
-            kaggle["stoppedAtUtc8"] = ""
-        if state in ("stopped", "error"):
-            kaggle["stoppedAtUtc8"] = now_utc8()
-        cfg["kaggle"] = kaggle
-        cfg["version"] = "v2.4.2-gguf-endpoint-guard"
-        cfg.setdefault("systemPrompt", "你是手機端通用 LLM 助理，也是 Oracle Cloud 救援 AI。")
-        cfg.setdefault("extraDiagnosticCommands", [])
-        raw = json.dumps(cfg, ensure_ascii=False, indent=2).encode("utf-8")
-        payload = {
-            "message": f"Update Kaggle GGUF endpoint {state}",
-            "content": base64.b64encode(raw).decode("ascii"),
-            "branch": GH_BRANCH,
-        }
-        if sha:
-            payload["sha"] = sha
-        gh_api("PUT", f"/repos/{GH_OWNER}/{GH_REPO}/contents/{CONFIG_PATH}", payload)
+            print("MANUAL_KAGGLE_PUBLIC_URL=" + base_url.rstrip("/"), flush=True)
+            print("MANUAL_KAGGLE_BASE_URL=" + base_url.rstrip("/") + "/v1", flush=True)
 
 
 def sh(cmd, check=True, env=None):
@@ -246,7 +258,7 @@ def find_gguf_model():
             continue
         files.extend(root.rglob("*.gguf"))
     if not files:
-        raise RuntimeError("No .gguf model found under /kaggle/input. Please attach dataset dinosonicgo/qwen36-27b-q4-gguf-cache to the Kaggle kernel.")
+        raise RuntimeError("No .gguf model found under /kaggle/input. Please attach dataset dinosonicgo/qwen36-27b-q4-gguf-cache or model source dinosonicgo/qwen36-gguf-hermes/gguf/qwen36-gguf-hermes/1 to the Kaggle kernel.")
 
     def score(p: Path):
         s = str(p).lower()
@@ -488,6 +500,8 @@ def main():
         llama_proc, gpu_layers = start_llama_server(llama_bin, model_path)
         proxy = start_proxy()
         tunnel, public_url = start_tunnel()
+        print("KAGGLE_PUBLIC_URL=" + public_url.rstrip("/"), flush=True)
+        print("KAGGLE_BASE_URL=" + public_url.rstrip("/") + "/v1", flush=True)
         publish_status("running", public_url, f"Kaggle GGUF Qwen API running via llama.cpp; n_gpu_layers={gpu_layers}; ctx={DEFAULT_CTX_SIZE}")
         threading.Thread(target=heartbeat_loop, args=(public_url,), daemon=True).start()
         while True:

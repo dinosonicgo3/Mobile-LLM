@@ -23,6 +23,10 @@ on:
         description: 'Kaggle tunnel / llama.cpp 工具 dataset slug，可留空'
         required: false
         default: 'dinosonicgo/qwen36-tunnel-tools'
+      model_source:
+        description: 'Kaggle Model source，可留空；格式 username/model/framework/variation/version'
+        required: false
+        default: 'dinosonicgo/qwen36-gguf-hermes/gguf/qwen36-gguf-hermes/1'
 
 permissions:
   contents: read
@@ -83,6 +87,7 @@ jobs:
           MODEL_NAME: ${{ github.event.inputs.model_name }}
           DATASET_SLUG: ${{ github.event.inputs.dataset_slug }}
           TOOLS_DATASET_SLUG: ${{ github.event.inputs.tools_dataset_slug }}
+          MODEL_SOURCE: ${{ github.event.inputs.model_source }}
         run: |
           if [ -z "$GH_CONFIG_PAT" ]; then
             echo "Missing GitHub secret GH_CONFIG_PAT. It needs Contents: Read and write on this repo."
@@ -104,6 +109,7 @@ jobs:
               '__IDLE_MINUTES__': os.environ['IDLE_MINUTES'],
               '__WEEKLY_QUOTA_HOURS__': os.environ['WEEKLY_QUOTA_HOURS'],
               '__MODEL_NAME__': os.environ['MODEL_NAME'] or 'qwen36-27b-q4-gguf',
+              '__MODEL_SOURCE__': os.environ.get('MODEL_SOURCE', '') or '',
           }
           for k, v in repl.items():
               s = s.replace(k, v.replace('\\', '\\\\').replace('"', '\\"'))
@@ -113,6 +119,10 @@ jobs:
               slug = (slug or '').strip()
               if slug and slug not in dataset_sources:
                   dataset_sources.append(slug)
+          model_sources = []
+          model_source = (os.environ.get('MODEL_SOURCE', '') or '').strip()
+          if model_source:
+              model_sources.append(model_source)
           meta = {
               'id': f"{os.environ['KAGGLE_USERNAME']}/mobile-llm-kaggle-qwen",
               'title': 'Mobile LLM Kaggle Qwen API',
@@ -124,7 +134,8 @@ jobs:
               'enable_internet': True,
               'dataset_sources': dataset_sources,
               'competition_sources': [],
-              'kernel_sources': []
+              'kernel_sources': [],
+              'model_sources': model_sources
           }
           pathlib.Path('kaggle_runtime/kernel-metadata.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
           PY
@@ -132,4 +143,19 @@ jobs:
       - name: Push Kaggle kernel
         run: |
           # GGUF 由 llama.cpp 啟動；T4 可用但 27B Q4 可能會視顯存自動降低 GPU offload。
+          # 先嘗試同時掛載 Kaggle Model；若 model_sources 路徑不完整或版本不符，移除 model_sources 後自動退回 dataset-only。
+          set +e
           kaggle kernels push -p kaggle_runtime --accelerator NvidiaTeslaT4 --timeout 43200
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            echo "First push failed. Retrying without model_sources, using dataset_sources only."
+            python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('kaggle_runtime/kernel-metadata.json')
+          meta = json.loads(p.read_text(encoding='utf-8'))
+          meta['model_sources'] = []
+          p.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+          PY
+            kaggle kernels push -p kaggle_runtime --accelerator NvidiaTeslaT4 --timeout 43200
+          fi

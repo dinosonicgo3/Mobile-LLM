@@ -51,7 +51,7 @@ class UpdateSettings {
     String configPath = "oracle-ai-rescue-config.json";
     String githubToken = "";
     String kaggleStartWorkflow = "start-kaggle-qwen.yml";
-    int kaggleIdleMinutes = 15;
+    int kaggleIdleMinutes = 10;
     int kaggleWeeklyQuotaHours = 30;
 }
 
@@ -131,12 +131,29 @@ class ReleaseInfo {
     String name;
     String body;
     String apkUrl;
+    String apkApiUrl;
     String pageUrl;
-    ReleaseInfo(String tag, String name, String body, String apkUrl, String pageUrl) {
+    ReleaseInfo(String tag, String name, String body, String apkUrl, String apkApiUrl, String pageUrl) {
         this.tag = tag == null ? "" : tag;
         this.name = name == null ? "" : name;
         this.body = body == null ? "" : body;
         this.apkUrl = apkUrl == null ? "" : apkUrl;
+        this.apkApiUrl = apkApiUrl == null ? "" : apkApiUrl;
         this.pageUrl = pageUrl == null ? "" : pageUrl;
+    }
+}
+
+class WorkflowStatus {
+    String status;
+    String conclusion;
+    String name;
+    String htmlUrl;
+    String createdAt;
+    String updatedAt;
+    String runNumber;
+    String headBranch;
+    String displayTitle() {
+        String c = conclusion == null || conclusion.isEmpty() ? "" : (" / " + conclusion);
+        return (status == null ? "" : status) + c;
     }
 }

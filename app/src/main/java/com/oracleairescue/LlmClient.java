@@ -12,6 +12,9 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 
 class LlmClient {
     private final OkHttpClient client = new OkHttpClient.Builder()
@@ -273,9 +276,76 @@ class LlmClient {
                     String dl = a.optString("browser_download_url");
                     if ((name.endsWith(".apk") || name.endsWith(".zip")) && dl.length() > 0) { apk = dl; break; }
                 }
-                out.add(new ReleaseInfo(r.optString("tag_name"), r.optString("name"), r.optString("body"), apk, r.optString("html_url")));
+                String apkApi = "";
+                if (assets != null) for (int j = 0; j < assets.length(); j++) {
+                    JSONObject a = assets.optJSONObject(j);
+                    if (a == null) continue;
+                    String name = a.optString("name").toLowerCase();
+                    if (name.endsWith(".apk")) { apkApi = a.optString("url"); break; }
+                }
+                out.add(new ReleaseInfo(r.optString("tag_name"), r.optString("name"), r.optString("body"), apk, apkApi, r.optString("html_url")));
             }
             return out;
+        }
+    }
+
+    WorkflowStatus latestWorkflowStatus(UpdateSettings u, String workflowFile) throws Exception {
+        if (u.owner.trim().isEmpty() || u.repo.trim().isEmpty()) throw new IllegalArgumentException("請先填 GitHub owner/repo。");
+        if (u.githubToken.trim().isEmpty()) throw new IllegalArgumentException("請先填 GitHub Token，需 Actions: Read 權限。");
+        String wf = (workflowFile == null || workflowFile.trim().isEmpty()) ? "start-kaggle-qwen.yml" : workflowFile.trim();
+        String url = "https://api.github.com/repos/" + u.owner.trim() + "/" + u.repo.trim() + "/actions/workflows/" + wf + "/runs?branch=" + URLEncoder.encode(u.branch.trim(), "UTF-8") + "&event=workflow_dispatch&per_page=1";
+        Request request = new Request.Builder()
+            .url(url)
+            .addHeader("Accept", "application/vnd.github+json")
+            .addHeader("Authorization", "Bearer " + u.githubToken.trim())
+            .addHeader("X-GitHub-Api-Version", "2022-11-28")
+            .get()
+            .build();
+        try (Response response = client.newCall(request).execute()) {
+            String body = response.body() == null ? "" : response.body().string();
+            if (!response.isSuccessful()) throw new RuntimeException("查詢 GitHub Actions 狀態失敗：HTTP " + response.code() + "\n" + body + "\n\nToken 需要 Actions: Read 權限。");
+            JSONObject root = new JSONObject(body);
+            JSONArray arr = root.optJSONArray("workflow_runs");
+            if (arr == null || arr.length() == 0) throw new RuntimeException("找不到此 workflow 的執行紀錄：" + wf);
+            JSONObject r = arr.getJSONObject(0);
+            WorkflowStatus st = new WorkflowStatus();
+            st.status = r.optString("status", "");
+            st.conclusion = r.optString("conclusion", "");
+            st.name = r.optString("name", wf);
+            st.htmlUrl = r.optString("html_url", "");
+            st.createdAt = r.optString("created_at", "");
+            st.updatedAt = r.optString("updated_at", "");
+            st.runNumber = String.valueOf(r.optLong("run_number", 0));
+            st.headBranch = r.optString("head_branch", "");
+            return st;
+        }
+    }
+
+    File downloadApk(UpdateSettings u, ReleaseInfo r, File dest) throws Exception {
+        if (r == null) throw new IllegalArgumentException("沒有選擇 Release。");
+        String url = r.apkApiUrl != null && r.apkApiUrl.trim().length() > 0 ? r.apkApiUrl.trim() : r.apkUrl.trim();
+        if (url.length() == 0) throw new IllegalArgumentException("此 Release 沒有 APK 檔。");
+        Request.Builder rb = new Request.Builder().url(url).get();
+        if (r.apkApiUrl != null && r.apkApiUrl.trim().length() > 0) {
+            rb.addHeader("Accept", "application/octet-stream");
+            rb.addHeader("X-GitHub-Api-Version", "2022-11-28");
+        }
+        if (u.githubToken != null && u.githubToken.trim().length() > 0) rb.addHeader("Authorization", "Bearer " + u.githubToken.trim());
+        try (Response response = client.newCall(rb.build()).execute()) {
+            if (!response.isSuccessful()) {
+                String body = response.body() == null ? "" : response.body().string();
+                throw new RuntimeException("下載 APK 失敗：HTTP " + response.code() + "\n" + body);
+            }
+            File parent = dest.getParentFile();
+            if (parent != null) parent.mkdirs();
+            if (response.body() == null) throw new RuntimeException("下載 APK 失敗：空回應");
+            try (InputStream in = response.body().byteStream(); FileOutputStream out = new FileOutputStream(dest)) {
+                byte[] buf = new byte[64 * 1024];
+                int n;
+                while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
+            }
+            if (dest.length() < 1024 * 1024) throw new RuntimeException("下載的檔案太小，可能不是 APK：" + dest.length() + " bytes");
+            return dest;
         }
     }
 

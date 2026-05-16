@@ -1,0 +1,1 @@
+v2.4.5: PackageInstaller self-update path. Selecting a Release version downloads APK and attempts silent self-update via USER_ACTION_NOT_REQUIRED; falls back to installer UI if Android requires user action.

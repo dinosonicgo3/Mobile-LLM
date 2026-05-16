@@ -2,13 +2,20 @@ package com.oracleairescue;
 
 import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.app.PendingIntent;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.PackageInstaller;
+import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.net.Uri;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -76,12 +83,18 @@ public class MainActivity extends Activity {
     private Markwon markwon;
     private EditText chatInput;
     private static final int REQUEST_IMPORT_SSH_KEY = 8801;
+    private static final String ACTION_SELF_UPDATE_STATUS = "com.oracleairescue.SELF_UPDATE_STATUS";
+    private BroadcastReceiver selfUpdateReceiver;
+    private File pendingSelfUpdateApk;
     private EditText sshPrivateKeyEditor;
     private TextView sshKeyStatusLabel;
 
     private final String[] providerLabels = new String[] {"Google Gemini", "NVIDIA NIM", "Kaggle Qwen / OpenAI 相容", "本機 Gemma 4", "自訂 OpenAI 相容"};
     private final String[] providerCodes = new String[] {"gemini", "nim", "kaggle", "local_gemma", "custom"};
-    private static final String APP_VERSION_FALLBACK = "2.3.3";
+    private static final String APP_VERSION_FALLBACK = "2.4.6";
+    private static final String SELF_UPDATE_PREFS = "self_update";
+    private static final String KEY_PENDING_UPDATE_APK_PATH = "pending_update_apk_path";
+    private static final String KEY_PENDING_UPDATE_TAG = "pending_update_tag";
 
     private String appVersionName() {
         try {
@@ -89,6 +102,64 @@ public class MainActivity extends Activity {
             if (info != null && info.versionName != null && info.versionName.trim().length() > 0) return info.versionName;
         } catch (Exception ignored) {}
         return APP_VERSION_FALLBACK;
+    }
+
+    private String normalizeReleaseTag(String tag) {
+        if (tag == null) return "";
+        String t = tag.trim();
+        while (t.startsWith("v") || t.startsWith("V")) t = t.substring(1).trim();
+        return t;
+    }
+
+    private void rememberPendingUpdateApk(File apk, ReleaseInfo r) {
+        if (apk == null) return;
+        String tag = r == null ? "" : normalizeReleaseTag(r.tag);
+        getSharedPreferences(SELF_UPDATE_PREFS, MODE_PRIVATE)
+            .edit()
+            .putString(KEY_PENDING_UPDATE_APK_PATH, apk.getAbsolutePath())
+            .putString(KEY_PENDING_UPDATE_TAG, tag)
+            .apply();
+    }
+
+    private void cleanupDownloadedUpdateApksOnLaunch() {
+        try {
+            SharedPreferences sp = getSharedPreferences(SELF_UPDATE_PREFS, MODE_PRIVATE);
+            String path = sp.getString(KEY_PENDING_UPDATE_APK_PATH, "");
+            String targetTag = sp.getString(KEY_PENDING_UPDATE_TAG, "");
+            String current = normalizeReleaseTag(appVersionName());
+            boolean targetInstalled = targetTag != null && targetTag.length() > 0 && targetTag.equals(current);
+            if (targetInstalled && path != null && path.length() > 0) {
+                File apk = new File(path);
+                if (apk.exists()) apk.delete();
+                sp.edit().remove(KEY_PENDING_UPDATE_APK_PATH).remove(KEY_PENDING_UPDATE_TAG).apply();
+            }
+            cleanupOldUpdateApks();
+        } catch (Exception ignored) {}
+    }
+
+    private void cleanupPendingUpdateApk(String reason) {
+        try {
+            SharedPreferences sp = getSharedPreferences(SELF_UPDATE_PREFS, MODE_PRIVATE);
+            String path = sp.getString(KEY_PENDING_UPDATE_APK_PATH, "");
+            File apk = pendingSelfUpdateApk;
+            if (apk == null && path != null && path.length() > 0) apk = new File(path);
+            if (apk != null && apk.exists()) apk.delete();
+            sp.edit().remove(KEY_PENDING_UPDATE_APK_PATH).remove(KEY_PENDING_UPDATE_TAG).apply();
+        } catch (Exception ignored) {}
+    }
+
+    private void cleanupOldUpdateApks() {
+        try {
+            File dir = new File(getCacheDir(), "updates");
+            File[] files = dir.listFiles();
+            if (files == null) return;
+            long cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L;
+            for (File f : files) {
+                if (!f.isFile()) continue;
+                String name = f.getName().toLowerCase(Locale.ROOT);
+                if (name.endsWith(".apk") && f.lastModified() < cutoff) f.delete();
+            }
+        } catch (Exception ignored) {}
     }
 
     @Override
@@ -103,10 +174,49 @@ public class MainActivity extends Activity {
         verifier31BModelName = store.loadVerifier31BModelName();
         verifierNim31BModelName = store.loadVerifierNim31BModelName();
         chatMessages.addAll(store.loadChat());
+        ensureSelfUpdateReceiver();
+        cleanupDownloadedUpdateApksOnLaunch();
         showShell("聊天");
         showChatPage();
         appLog("APP 啟動 v" + appVersionName() + "｜目前平台：" + providerTitle(modelSettings.provider) + "｜模型：" + modelSettings.modelName);
         autoSyncKaggleEndpointQuietly();
+    }
+
+    private void ensureSelfUpdateReceiver() {
+        if (selfUpdateReceiver != null) return;
+        selfUpdateReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
+                String message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
+                if (status == PackageInstaller.STATUS_SUCCESS) {
+                    cleanupPendingUpdateApk("PackageInstaller success");
+                    toast("更新已套用，已清理下載的 APK。若 App 未自動重開，請重新開啟。 ");
+                    return;
+                }
+                if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                    Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+                    if (confirm != null) {
+                        confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        try { startActivity(confirm); } catch (Exception e) { showTextDialog("需要手動確認安裝", String.valueOf(e)); }
+                    } else {
+                        showTextDialog("需要手動確認安裝", "Android 要求使用者確認，但系統沒有回傳確認畫面。 ");
+                    }
+                    return;
+                }
+                String text = "狀態碼：" + status + "\n" + (message == null ? "" : message);
+                File apk = pendingSelfUpdateApk;
+                if (apk != null && apk.exists()) {
+                    showTextDialog("靜默更新未完成", text + "\n\n將改用一般 Android 安裝器。 ");
+                    installDownloadedApkLegacy(apk);
+                } else {
+                    showTextDialog("靜默更新未完成", text);
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(ACTION_SELF_UPDATE_STATUS);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(selfUpdateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(selfUpdateReceiver, filter);
     }
 
     @Override
@@ -1838,7 +1948,7 @@ public class MainActivity extends Activity {
         workflow.setText(updateSettings.kaggleStartWorkflow);
         box.addView(workflow);
 
-        EditText idle = edit("閒置自動關閉分鐘數，建議 15", false);
+        EditText idle = edit("閒置自動關閉分鐘數，建議 10", false);
         idle.setInputType(InputType.TYPE_CLASS_NUMBER);
         idle.setText(String.valueOf(updateSettings.kaggleIdleMinutes));
         box.addView(idle);
@@ -1878,9 +1988,10 @@ public class MainActivity extends Activity {
                     .put("weekly_quota_hours", String.valueOf(updateSettings.kaggleWeeklyQuotaHours))
                     .put("model_name", "qwen36-27b-q4-gguf")
                     .put("dataset_slug", "dinosonicgo/qwen36-27b-q4-gguf-cache")
-                    .put("tools_dataset_slug", "dinosonicgo/qwen36-tunnel-tools");
+                    .put("tools_dataset_slug", "dinosonicgo/qwen36-tunnel-tools")
+                    .put("model_source", "dinosonicgo/qwen36-gguf-hermes/gguf/qwen36-gguf-hermes/1");
                 llm.dispatchWorkflow(updateSettings, updateSettings.kaggleStartWorkflow, inputs);
-                ui.post(() -> showTextDialog("已送出啟動要求", "GitHub Actions 已接受啟動要求。\n\n請等待數分鐘後按『同步 Kaggle 狀態/端點』。如果模型很大，可能需要更久。"));
+                ui.post(() -> showTextDialog("已送出啟動要求", "GitHub Actions 已接受啟動要求。\n\n請等待數分鐘後按『同步 Kaggle 狀態/端點』。v2.4.4 會同時查 GitHub Actions 最近一次啟動狀態；若端點沒有寫回 GitHub，請打開最近 workflow 的 log，搜尋 KAGGLE_BASE_URL 或 MANUAL_KAGGLE_BASE_URL，將該網址填到設定頁 Base URL。"));
             });
         }));
         Button stop = button("停止 Kaggle API");
@@ -1892,6 +2003,13 @@ public class MainActivity extends Activity {
             });
         }));
         row1.addView(start, weight()); row1.addView(stop, weight()); box.addView(row1);
+
+        Button checkWorkflow = button("檢查最近 GitHub Actions 啟動狀態");
+        checkWorkflow.setOnClickListener(v -> { save.performClick(); runTask("正在檢查最近 workflow…", () -> {
+            WorkflowStatus st = llm.latestWorkflowStatus(updateSettings, updateSettings.kaggleStartWorkflow);
+            ui.post(() -> showWorkflowStatusDialog(st));
+        });});
+        box.addView(checkWorkflow);
 
         addSection(box, "額度與重置時間，UTC+8");
         box.addView(label("Kaggle 沒有穩定公開 API 可讓手機直接讀取你帳號的剩餘 GPU 額度；App 顯示的是由 Kaggle 端程式寫回 GitHub 的估算值。Kaggle 額度一般每週六 00:00 UTC 重置，也就是台灣時間 UTC+8 的週六 08:00。", 14, false));
@@ -1910,11 +2028,41 @@ public class MainActivity extends Activity {
             store.saveRuntimeConfig(cfg);
             runtimeConfig = cfg;
             boolean ok = applyKaggleConfig(cfg, true);
+            WorkflowStatus wf = null;
+            if (!ok) {
+                try { wf = llm.latestWorkflowStatus(updateSettings, updateSettings.kaggleStartWorkflow); } catch (Exception ignored) {}
+            }
+            WorkflowStatus finalWf = wf;
             ui.post(() -> {
                 target.setText(kaggleStatusText(runtimeConfig));
-                if (showDialog) showTextDialog("Kaggle 狀態", kaggleStatusText(runtimeConfig) + "\n\n端點同步：" + (ok ? "成功" : "尚未取得 Base URL"));
+                if (showDialog) {
+                    String msg = kaggleStatusText(runtimeConfig) + "\n\n端點同步：" + (ok ? "成功" : "尚未取得 Base URL");
+                    if (!ok) {
+                        msg += "\n\n若 GitHub Actions 已成功，但這裡仍沒有 Base URL，代表 Kaggle worker 沒有把隧道網址寫回 oracle-ai-rescue-config.json。請打開最近一次 Start Kaggle Qwen API 的 log，搜尋 KAGGLE_BASE_URL 或 MANUAL_KAGGLE_BASE_URL，將該 https://.../v1 手動填到設定頁 Base URL。";
+                    }
+                    if (finalWf != null) {
+                        msg += "\n\n最近 workflow：#" + finalWf.runNumber + "｜" + finalWf.displayTitle() + "\n建立：" + finalWf.createdAt + "\n更新：" + finalWf.updatedAt;
+                    }
+                    showTextDialog("Kaggle 狀態", msg);
+                }
             });
         });
+    }
+
+    private void showWorkflowStatusDialog(WorkflowStatus st) {
+        String msg = "Workflow：" + emptyDash(st.name) + "\n" +
+            "Run：#" + emptyDash(st.runNumber) + "\n" +
+            "狀態：" + st.displayTitle() + "\n" +
+            "分支：" + emptyDash(st.headBranch) + "\n" +
+            "建立：" + emptyDash(st.createdAt) + "\n" +
+            "更新：" + emptyDash(st.updatedAt) + "\n\n" +
+            "若狀態是 completed / failure，請按『開啟』查看失敗原因。若狀態是 completed / success 但 App 仍同步不到端點，請在 log 搜尋 KAGGLE_BASE_URL 或 MANUAL_KAGGLE_BASE_URL。";
+        new AlertDialog.Builder(this)
+            .setTitle("最近 GitHub Actions 狀態")
+            .setMessage(msg)
+            .setPositiveButton("開啟", (d, w) -> { if (st.htmlUrl != null && st.htmlUrl.length() > 0) startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(st.htmlUrl))); })
+            .setNegativeButton("關閉", null)
+            .show();
     }
 
     private String kaggleStatusText(RuntimeConfig cfg) {
@@ -2433,8 +2581,8 @@ public class MainActivity extends Activity {
         box.addView(rollback);
 
         addSection(box, "APK 版本更新與回滾");
-        box.addView(label("App 會讀取 GitHub Releases。你可以下載新版 APK；若新版壞掉，可回到 Releases 下載舊版 APK 重新安裝。若 App 已經完全打不開，請直接用瀏覽器進 GitHub Releases 下載舊版，這是最可靠的救援回滾。", 14, false));
-        Button releases = button("查看 Releases / 下載 APK");
+        box.addView(label("App 會讀取 GitHub Releases。v2.4.6 起，點選版本後會自動下載 APK，安裝成功後會清理下載的 APK，並優先使用 Android PackageInstaller 嘗試靜默自我更新；若你的手機系統仍要求確認，會自動降級到一般安裝器畫面。若新版壞掉，可回到 Releases 下載舊版 APK 回滾。", 14, false));
+        Button releases = button("查看版本 / 點選即嘗試靜默更新");
         releases.setOnClickListener(v -> { save.performClick(); runTask("正在讀取 GitHub Releases…", () -> {
             List<ReleaseInfo> list = llm.listReleases(updateSettings);
             ui.post(() -> openReleaseDialog(list));
@@ -2448,14 +2596,103 @@ public class MainActivity extends Activity {
         for (int i = 0; i < list.size(); i++) items[i] = list.get(i).tag + "｜" + (list.get(i).name.isEmpty() ? "未命名" : list.get(i).name);
         new AlertDialog.Builder(this)
             .setTitle("選擇版本")
-            .setItems(items, (d, which) -> {
-                ReleaseInfo r = list.get(which);
-                String url = r.apkUrl.isEmpty() ? r.pageUrl : r.apkUrl;
-                if (url == null || url.isEmpty()) { toast("此版本沒有 APK 或頁面連結"); return; }
+            .setItems(items, (d, which) -> downloadAndInstallRelease(list.get(which)))
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    private void openReleaseActionDialog(ReleaseInfo r) {
+        String msg = (r.body == null || r.body.trim().isEmpty()) ? "" : r.body.trim();
+        new AlertDialog.Builder(this)
+            .setTitle(r.tag + "｜" + (r.name.isEmpty() ? "未命名" : r.name))
+            .setMessage(msg.length() > 0 ? msg : "選擇要在 App 內下載安裝，或開啟 GitHub Release 頁面。")
+            .setPositiveButton("下載並嘗試靜默更新", (d, w) -> downloadAndInstallRelease(r))
+            .setNeutralButton("開啟頁面", (d, w) -> {
+                String url = r.pageUrl == null || r.pageUrl.isEmpty() ? r.apkUrl : r.pageUrl;
+                if (url == null || url.isEmpty()) { toast("沒有可開啟的連結"); return; }
                 startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
             })
             .setNegativeButton("取消", null)
             .show();
+    }
+
+    private void downloadAndInstallRelease(ReleaseInfo r) {
+        if ((r.apkUrl == null || r.apkUrl.isEmpty()) && (r.apkApiUrl == null || r.apkApiUrl.isEmpty())) {
+            showTextDialog("無法下載", "此 Release 沒有 APK asset。請先確認 Build Release APK 已成功產生 .apk。 ");
+            return;
+        }
+        runTask("正在下載 APK…", () -> {
+            File dir = new File(getCacheDir(), "updates");
+            if (!dir.exists()) dir.mkdirs();
+            String safeTag = (r.tag == null || r.tag.isEmpty() ? "latest" : r.tag).replaceAll("[^A-Za-z0-9._-]", "_");
+            File apk = new File(dir, "OracleCloudAI-" + safeTag + ".apk");
+            llm.downloadApk(updateSettings, r, apk);
+            rememberPendingUpdateApk(apk, r);
+            ui.post(() -> installDownloadedApk(apk));
+        });
+    }
+
+    private void installDownloadedApk(File apk) {
+        pendingSelfUpdateApk = apk;
+        if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+            showTextDialog("需要允許安裝此來源", "第一次使用 App 內更新時，Android 需要你允許此 App 安裝 APK。請在接下來的設定頁允許後，再回來重新點選版本。允許後，Android 12+ 會優先嘗試靜默自我更新。 ");
+            Intent intent = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 31) {
+            try {
+                installDownloadedApkSilent(apk);
+                toast("已送出靜默更新請求；若系統需要確認，會自動跳出安裝畫面。 ");
+                return;
+            } catch (Exception e) {
+                showTextDialog("靜默更新送出失敗", String.valueOf(e) + "\n\n將改用一般 Android 安裝器。 ");
+            }
+        }
+        installDownloadedApkLegacy(apk);
+    }
+
+    private void installDownloadedApkSilent(File apk) throws Exception {
+        ensureSelfUpdateReceiver();
+        PackageInstaller installer = getPackageManager().getPackageInstaller();
+        PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+        params.setAppPackageName(getPackageName());
+        params.setInstallReason(PackageManager.INSTALL_REASON_USER);
+        if (Build.VERSION.SDK_INT >= 31) {
+            params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
+        }
+        int sessionId = installer.createSession(params);
+        PackageInstaller.Session session = null;
+        try {
+            session = installer.openSession(sessionId);
+            try (InputStream in = new FileInputStream(apk); OutputStream out = session.openWrite("self-update.apk", 0, apk.length())) {
+                byte[] buffer = new byte[1024 * 1024];
+                int read;
+                while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
+                session.fsync(out);
+            }
+            Intent callback = new Intent(ACTION_SELF_UPDATE_STATUS).setPackage(getPackageName());
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_MUTABLE;
+            PendingIntent pendingIntent = PendingIntent.getBroadcast(this, sessionId, callback, flags);
+            session.commit(pendingIntent.getIntentSender());
+        } finally {
+            if (session != null) {
+                try { session.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void installDownloadedApkLegacy(File apk) {
+        try {
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apk);
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, "application/vnd.android.package-archive");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            showTextDialog("安裝失敗", String.valueOf(e));
+        }
     }
 
 

@@ -1,0 +1,1 @@
+v2.4.3：新增 Kaggle Model source 候選路徑 dinosonicgo/qwen36-gguf-hermes/gguf/qwen36-gguf-hermes/1；若 Kaggle push 因 model_sources 失敗，workflow 會自動退回 dataset_sources only。
