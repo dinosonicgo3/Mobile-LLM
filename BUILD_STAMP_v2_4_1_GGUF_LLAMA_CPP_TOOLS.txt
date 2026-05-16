@@ -1,0 +1,1 @@
+v2.4.1：Kaggle 追加掛載 dinosonicgo/qwen36-tunnel-tools；workflow 與手機啟動 inputs 會傳 tools_dataset_slug；worker 優先使用工具 dataset 中的 cloudflared / llama-server，找不到才 fallback 下載或編譯。

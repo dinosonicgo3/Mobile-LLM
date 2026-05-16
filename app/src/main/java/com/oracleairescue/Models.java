@@ -112,7 +112,7 @@ class RuntimeConfig {
     List<String> extraDiagnosticCommands = new ArrayList<>();
     String kaggleBaseUrl = "";
     String kaggleApiKey = "";
-    String kaggleDefaultModel = "Qwen/Qwen3.6-27B";
+    String kaggleDefaultModel = "qwen36-27b-q4-gguf";
     List<String> kaggleModels = new ArrayList<>();
     String kaggleState = "unknown";
     String kaggleLastHeartbeatUtc8 = "";

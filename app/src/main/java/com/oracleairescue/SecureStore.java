@@ -389,7 +389,7 @@ class SecureStore {
         ModelSettings m = new ModelSettings();
         m.provider = provider;
         if ("nim".equals(provider)) { m.baseUrl = "https://integrate.api.nvidia.com/v1"; m.modelName = "meta/llama-3.1-70b-instruct"; }
-        else if ("kaggle".equals(provider)) { m.baseUrl = "https://你的-kaggle-隧道網址/v1"; m.modelName = "Qwen/Qwen3.6-27B"; }
+        else if ("kaggle".equals(provider)) { m.baseUrl = "https://你的-kaggle-隧道網址/v1"; m.modelName = "qwen36-27b-q4-gguf"; }
         else if ("local_gemma".equals(provider)) { m.baseUrl = ""; m.modelName = "gemma-4-E2B-it.litertlm"; }
         else if ("custom".equals(provider)) { m.baseUrl = "https://example.com/v1"; m.modelName = "your-model-name"; }
         else { m.baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"; m.modelName = "gemini-2.5-flash"; }
@@ -400,10 +400,9 @@ class SecureStore {
     private static List<ModelOption> defaultFavorites(String provider) {
         List<ModelOption> out = new ArrayList<>();
         if ("kaggle".equals(provider)) {
-            out.add(new ModelOption("Qwen/Qwen3.6-27B", "Qwen 3.6 27B", "Kaggle / vLLM OpenAI 相容端點常用模型；若伺服器模型名稱不同，請在設定頁手動改成實際名稱。"));
-            out.add(new ModelOption("Qwen/Qwen3.6-35B", "Qwen 3.6 35B", "Kaggle / vLLM OpenAI 相容端點常用模型；若伺服器模型名稱不同，請在設定頁手動改成實際名稱。"));
-            out.add(new ModelOption("qwen3.6-27b", "qwen3.6-27b", "備用短名稱，供自訂 FastAPI/vLLM 服務使用。"));
-            out.add(new ModelOption("qwen3.6-35b", "qwen3.6-35b", "備用短名稱，供自訂 FastAPI/vLLM 服務使用。"));
+            out.add(new ModelOption("qwen36-27b-q4-gguf", "Qwen3.6 27B Q4 GGUF", "Kaggle / llama.cpp OpenAI 相容端點；對應 dinosonicgo/qwen36-27b-q4-gguf-cache。"));
+            out.add(new ModelOption("qwen3.6-27b-q4", "qwen3.6-27b-q4", "備用短名稱，供 llama.cpp alias 或自訂端點使用。"));
+            out.add(new ModelOption("qwen3.6-27b", "qwen3.6-27b", "備用短名稱，供自訂 OpenAI 相容服務使用。"));
         } else if ("nim".equals(provider)) {
             out.add(new ModelOption("google/gemma-4-31b-it", "Gemma 4 31B IT（官方 NIM ID）", "NVIDIA 官方 API Reference / Build NVIDIA 確認的 Gemma 4 31B 模型 ID；用於後段驗證備援。"));
             out.add(new ModelOption("meta/llama-3.1-70b-instruct", "Llama 3.1 70B Instruct", "NVIDIA NIM 常用聊天模型。"));

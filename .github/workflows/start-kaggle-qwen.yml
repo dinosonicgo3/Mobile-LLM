@@ -6,15 +6,23 @@ on:
       idle_minutes:
         description: '閒置幾分鐘後自動關閉 Kaggle GPU'
         required: true
-        default: '15'
+        default: '10'
       weekly_quota_hours:
         description: '每週 GPU 額度小時，僅供估算'
         required: true
         default: '30'
       model_name:
-        description: 'Kaggle 端要啟動的模型名稱'
+        description: 'Kaggle / llama.cpp 對外顯示的模型名稱'
         required: false
-        default: 'Qwen/Qwen3.6-27B'
+        default: 'qwen36-27b-q4-gguf'
+      dataset_slug:
+        description: 'Kaggle GGUF 模型 dataset slug'
+        required: true
+        default: 'dinosonicgo/qwen36-27b-q4-gguf-cache'
+      tools_dataset_slug:
+        description: 'Kaggle tunnel / llama.cpp 工具 dataset slug，可留空'
+        required: false
+        default: 'dinosonicgo/qwen36-tunnel-tools'
 
 permissions:
   contents: read
@@ -73,6 +81,8 @@ jobs:
           IDLE_MINUTES: ${{ github.event.inputs.idle_minutes }}
           WEEKLY_QUOTA_HOURS: ${{ github.event.inputs.weekly_quota_hours }}
           MODEL_NAME: ${{ github.event.inputs.model_name }}
+          DATASET_SLUG: ${{ github.event.inputs.dataset_slug }}
+          TOOLS_DATASET_SLUG: ${{ github.event.inputs.tools_dataset_slug }}
         run: |
           if [ -z "$GH_CONFIG_PAT" ]; then
             echo "Missing GitHub secret GH_CONFIG_PAT. It needs Contents: Read and write on this repo."
@@ -93,11 +103,16 @@ jobs:
               '__CONFIG_PATH__': os.environ['CONFIG_PATH'],
               '__IDLE_MINUTES__': os.environ['IDLE_MINUTES'],
               '__WEEKLY_QUOTA_HOURS__': os.environ['WEEKLY_QUOTA_HOURS'],
-              '__MODEL_NAME__': os.environ['MODEL_NAME'] or 'Qwen/Qwen3.6-27B',
+              '__MODEL_NAME__': os.environ['MODEL_NAME'] or 'qwen36-27b-q4-gguf',
           }
           for k, v in repl.items():
               s = s.replace(k, v.replace('\\', '\\\\').replace('"', '\\"'))
           p.write_text(s, encoding='utf-8')
+          dataset_sources = []
+          for slug in [os.environ.get('DATASET_SLUG', ''), os.environ.get('TOOLS_DATASET_SLUG', '')]:
+              slug = (slug or '').strip()
+              if slug and slug not in dataset_sources:
+                  dataset_sources.append(slug)
           meta = {
               'id': f"{os.environ['KAGGLE_USERNAME']}/mobile-llm-kaggle-qwen",
               'title': 'Mobile LLM Kaggle Qwen API',
@@ -107,7 +122,7 @@ jobs:
               'is_private': True,
               'enable_gpu': True,
               'enable_internet': True,
-              'dataset_sources': [],
+              'dataset_sources': dataset_sources,
               'competition_sources': [],
               'kernel_sources': []
           }
@@ -116,5 +131,5 @@ jobs:
 
       - name: Push Kaggle kernel
         run: |
-          # T4 較適合 Qwen；若帳號沒有 T4，Kaggle 可能會改派或失敗。
+          # GGUF 由 llama.cpp 啟動；T4 可用但 27B Q4 可能會視顯存自動降低 GPU offload。
           kaggle kernels push -p kaggle_runtime --accelerator NvidiaTeslaT4 --timeout 43200

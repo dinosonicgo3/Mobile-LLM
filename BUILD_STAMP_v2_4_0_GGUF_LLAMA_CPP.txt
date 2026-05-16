@@ -1,0 +1,1 @@
+v2.4.0 GGUF / llama.cpp 收斂版：Kaggle 掛載 dinosonicgo/qwen36-27b-q4-gguf-cache，自動尋找 .gguf，以 llama-server 啟動 OpenAI 相容端點；Oracle Agent 允許 Kaggle 空 API Key 並對 Kaggle 使用 JSON 終端工具協議，避免 vLLM/native tools 不相容；閒置預設 10 分鐘關閉。

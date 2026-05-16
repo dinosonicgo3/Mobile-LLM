@@ -1,6 +1,6 @@
 {
-  "version": "v2.3.3-terminal-compat-convergence",
-  "systemPrompt": "你是成熟穩定的 Oracle Cloud 程式維護 Agent。你在 Oracle 主機本機 Runtime 執行，模型只使用單一 run_terminal_command 雲端本機終端工具；移除串流失敗後再等 300 秒的慢速 fallback，工具結果只回填小觀測值；不要預設目前有哪些專案，每次任務先用工具查證當下環境。工具結果高於模型推測；主模型不備援；後段驗證可備援。修改/刪除前先確認目標並備份，root 權限只能 sudo -n，不要求密碼。",
+  "version": "v2.4.1-gguf-llama-cpp-tools",
+  "systemPrompt": "你是成熟穩定的 Oracle Cloud 程式維護 Agent。你在 Oracle 主機本機 Runtime 執行，模型使用 Kaggle GGUF Qwen / llama.cpp 或其他 OpenAI 相容端點；工具側只使用單一 run_terminal_command 雲端本機終端工具。每次任務先用工具查證當下環境，不要依賴固定專案清單；工具結果高於模型推測。修改/刪除前先確認目標並備份，root 權限只能 sudo -n，不要求密碼。",
   "extraDiagnosticCommands": [
     "date",
     "whoami",
@@ -11,30 +11,32 @@
     "state": "not_started",
     "baseUrl": "",
     "apiKey": "",
-    "defaultModel": "Qwen/Qwen3.6-27B",
+    "defaultModel": "qwen36-27b-q4-gguf",
     "models": [
-      "Qwen/Qwen3.6-27B",
-      "Qwen/Qwen3.6-35B",
-      "qwen3.6-27b",
-      "qwen3.6-35b"
+      "qwen36-27b-q4-gguf",
+      "qwen3.6-27b-q4",
+      "qwen3.6-27b"
     ],
     "lastHeartbeatUtc8": "",
     "startedAtUtc8": "",
     "stoppedAtUtc8": "",
-    "idleShutdownMinutes": 15,
+    "idleShutdownMinutes": 10,
     "weeklyQuotaHours": 30,
     "estimatedUsedMinutes": 0,
     "estimatedRemainingMinutes": 1800,
     "weekResetAtUtc8": "",
-    "message": "v1.3.9 使用 KAGGLE_API_TOKEN；不要把真實 token 寫進 repo 或貼給任何 AI。",
+    "message": "v2.4.1 使用 Kaggle dataset dinosonicgo/qwen36-27b-q4-gguf-cache，並掛載 dinosonicgo/qwen36-tunnel-tools；Kaggle 端會優先尋找工具 dataset 中的 cloudflared / llama-server，找不到才下載或編譯。不要把真實 token 寫進 repo 或貼給任何 AI。",
     "username": "dinosonicgo",
     "secretName": "KAGGLE_API_TOKEN",
-    "tokenFormat": "KGAT_..."
+    "tokenFormat": "KGAT_...",
+    "datasetSlug": "dinosonicgo/qwen36-27b-q4-gguf-cache",
+    "backend": "llama.cpp llama-server GGUF + qwen36-tunnel-tools",
+    "toolsDatasetSlug": "dinosonicgo/qwen36-tunnel-tools"
   },
   "build": {
     "stableSigningKey": "app/oracleairescue-update-key.jks",
     "note": "v1.3.8 修正 .gitignore，確保固定簽章檔會上傳到 GitHub Actions。",
-    "fix": "v2.3.3 保留雲端 Agent Runtime 主架構，但學習 Gemini 化繁為簡：模型只看到單一 run_terminal_command 雲端本機終端工具；移除串流失敗後再等 300 秒的慢速 fallback，工具結果只回填小觀測值，不暴露多工具清單、不寫死專案清單。每次任務由模型先透過工具查證當下 Oracle 環境，再進行維護、修程式、測試或清理。",
+    "fix": "v2.4.0 改為 GGUF / llama.cpp 收斂版：Kaggle 掛載 dinosonicgo/qwen36-27b-q4-gguf-cache，自動尋找 .gguf，以 llama-server 提供 /v1/chat/completions；Oracle Agent 對 Kaggle 改走 JSON 終端工具協議，避免 native tools / vLLM tool parser 不相容。",
     "releaseWorkflow": "Build Release APK 會在 push 到 main/master 時自動執行；手動執行仍保留。"
   },
   "github": {
@@ -78,8 +80,8 @@
       "run_terminal_command"
     ],
     "safety": "v2.3.3：雲端 Agent Runtime + 單一 run_terminal_command 本機終端工具，加入 Gemma/Gemini 寬容工具解析、NIM 硬性收斂與步數/總時間上限。模型仍自行決定工具怎麼用，但只需決定 shell 指令；不提供固定專案清單，每次先查證當下環境。修改/刪除前備份，sudo 只用 sudo -n。",
-    "version": "v2.3.3",
-    "nativeTools": "enabled_single_terminal_tool",
+    "version": "v2.4.0",
+    "nativeTools": "disabled_for_kaggle_json_terminal; native retained only for non-Kaggle OpenAI-compatible endpoints",
     "streamingToolCalls": "enabled",
     "legacyJsonToolFallback": "compatibility_only"
   },
@@ -107,7 +109,7 @@
     "tools": [
       "run_terminal_command"
     ],
-    "safety": "v2.3.3：使用單一 run_terminal_command 雲端本機終端工具；移除串流失敗後再等 300 秒的慢速 fallback，工具結果只回填小觀測值循環；模型每次先查證當下環境，不依賴固定專案清單。工具結果高於推測，修改/刪除前備份，修檔仍需測試與後段驗證。"
+    "safety": "v2.4.0：Kaggle GGUF / llama.cpp 端點不要求 API Key；對 Kaggle 使用單一 JSON 終端工具協議，模型只需輸出 run_terminal_command 或 final。"
   },
   "modelPolicy": {
     "mainModelFallback": "disabled",
@@ -166,12 +168,21 @@
     "finalGuard": "single cloud-local terminal tool loop + static guard; mutating repairs still require backup/test/31B verification."
   },
   "release_notes": [
+    "v2.4.0：Kaggle 改為 GGUF / llama.cpp；掛載 dinosonicgo/qwen36-27b-q4-gguf-cache；閒置預設 10 分鐘關閉；Oracle Agent 允許 Kaggle 空 API Key 並使用 JSON 終端工具協議。",
     "v2.3.3：保留雲端 Runtime，但化繁為簡成單一 run_terminal_command 本機終端工具；不寫死專案清單，每次由模型先查證當下 Oracle 環境，再維護。"
   ],
   "cloud_agent_runtime": "primary_only",
   "direct_ssh_bridge": "disabled_as_main_flow",
   "session_logging": "enabled: ~/.oracle_ai_rescue/sessions/<session_id>.log",
   "releaseNotes": [
+    "v2.4.0：修正 Kaggle GGUF 模型啟動與工具調用路徑；不再要求 vLLM native tools。",
     "v2.3.3：修正 Gemini/Gemma 在 OpenAI 相容端點使用 stream+tools 會 HTTP 500 的問題；Gemini 改用同主模型短 JSON 終端協議，NIM 保持原生串流工具；同時修正 run_terminal_command 未被無幻覺守門視為已查證、以及空回覆/無工具多輪循環。"
+  ],
+  "latestFix": {
+    "version": "v2.4.1",
+    "fix": "加入 qwen36-tunnel-tools dataset 掛載；Kaggle worker 會優先使用掛載工具中的 cloudflared / llama-server，保留 GGUF / llama.cpp 與 JSON 終端工具協議。"
+  },
+  "history": [
+    "v2.4.1：Kaggle kernel 額外掛載 dinosonicgo/qwen36-tunnel-tools；worker 優先使用工具 dataset 的 cloudflared / llama-server，找不到才 fallback。"
   ]
 }

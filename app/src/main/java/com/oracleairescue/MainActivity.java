@@ -512,7 +512,7 @@ public class MainActivity extends Activity {
 
     private org.json.JSONObject buildRescueAgentRequest(String userText) throws Exception {
         org.json.JSONObject root = new org.json.JSONObject();
-        root.put("version", "2.3.3");
+        root.put("version", "2.4.0");
         root.put("question", userText);
         root.put("system_prompt", runtimeConfig == null ? "" : runtimeConfig.systemPrompt);
         root.put("max_steps", 4);
@@ -1380,7 +1380,7 @@ public class MainActivity extends Activity {
             runTask("正在取得模型清單…", () -> {
                 List<ModelOption> models = llm.listModels(modelSettings.copy());
                 ui.post(() -> {
-                    if (models.isEmpty()) toast("沒有取得模型；Kaggle/vLLM 若未開 /models，可手動輸入模型名稱後加入常用。");
+                    if (models.isEmpty()) toast("沒有取得模型；Kaggle/llama.cpp 若未開 /models，可手動輸入模型名稱後加入常用。");
                     store.saveCatalog(modelSettings.provider, models);
                     catalogInfo.setText("目前平台：" + providerTitle(modelSettings.provider) + "｜本平台模型清單：" + models.size() + "｜本平台常用模型：" + store.loadFavorites(modelSettings.provider).size());
                     setStatus("已取得 " + providerTitle(modelSettings.provider) + " 的 " + models.size() + " 個模型");
@@ -1448,7 +1448,7 @@ public class MainActivity extends Activity {
         box.addView(syncKaggle);
 
         addSection(box, "Kaggle Qwen 設定提示");
-        box.addView(label("Kaggle 端若用 vLLM/FastAPI，可由 Kaggle 程式把 Base URL 自動發布到 GitHub 設定檔；手機端按『自動同步 Kaggle 端點』即可，不必手動輸入網址。若你仍想手動填，Base URL 格式為：https://xxxx.ngrok-free.app/v1 或 https://xxxx.trycloudflare.com/v1。", 14, false));
+        box.addView(label("Kaggle 端使用 llama.cpp / FastAPI proxy 時，Kaggle 程式會把 Base URL 自動發布到 GitHub 設定檔；手機端按『自動同步 Kaggle 端點』即可，不必手動輸入網址。若你仍想手動填，Base URL 格式為：https://xxxx.trycloudflare.com/v1。", 14, false));
     }
 
     private void openFavoritesDialog(EditText modelName, TextView catalogInfo) {
@@ -1872,9 +1872,12 @@ public class MainActivity extends Activity {
             runTask("正在觸發 Kaggle 啟動 workflow…", () -> {
                 org.json.JSONObject inputs = new org.json.JSONObject()
                     .put("idle_minutes", String.valueOf(updateSettings.kaggleIdleMinutes))
-                    .put("weekly_quota_hours", String.valueOf(updateSettings.kaggleWeeklyQuotaHours));
+                    .put("weekly_quota_hours", String.valueOf(updateSettings.kaggleWeeklyQuotaHours))
+                    .put("model_name", "qwen36-27b-q4-gguf")
+                    .put("dataset_slug", "dinosonicgo/qwen36-27b-q4-gguf-cache")
+                    .put("tools_dataset_slug", "dinosonicgo/qwen36-tunnel-tools");
                 llm.dispatchWorkflow(updateSettings, updateSettings.kaggleStartWorkflow, inputs);
-                ui.post(() -> showTextDialog("已送出啟動要求", "GitHub Actions 已接受啟動要求。\n\n請等待 2～8 分鐘後按『同步 Kaggle 狀態/端點』。如果模型很大，可能需要更久。"));
+                ui.post(() -> showTextDialog("已送出啟動要求", "GitHub Actions 已接受啟動要求。\n\n請等待數分鐘後按『同步 Kaggle 狀態/端點』。如果模型很大，可能需要更久。"));
             });
         }));
         Button stop = button("停止 Kaggle API");
@@ -2880,7 +2883,7 @@ public class MainActivity extends Activity {
         m.provider = provider;
         if ("gemini".equals(provider)) { m.baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"; m.modelName = "gemini-2.5-flash"; }
         else if ("nim".equals(provider)) { m.baseUrl = "https://integrate.api.nvidia.com/v1"; m.modelName = "meta/llama-3.1-70b-instruct"; }
-        else if ("kaggle".equals(provider)) { m.baseUrl = ""; m.modelName = "Qwen/Qwen3.6-27B"; }
+        else if ("kaggle".equals(provider)) { m.baseUrl = ""; m.modelName = "qwen36-27b-q4-gguf"; }
         else { m.baseUrl = "https://example.com/v1"; m.modelName = "your-model-name"; }
         return m;
     }

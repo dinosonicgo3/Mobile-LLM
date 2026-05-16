@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.3.2
+"""Oracle AI Rescue Agent v2.4.0
 Runs on the Oracle host. The Android app is only a remote controller/bridge.
 Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
 Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
@@ -45,13 +45,38 @@ def default_base(provider):
     return ""
 
 
+def provider_requires_api_key(provider):
+    return (provider or "").strip().lower() in ("gemini", "nim")
+
+
+def model_config_usable(cfg):
+    if not cfg:
+        return False
+    provider = (cfg.get("provider") or "custom").strip().lower()
+    model = (cfg.get("model") or cfg.get("modelName") or "").strip()
+    base = (cfg.get("base_url") or cfg.get("baseUrl") or default_base(provider)).rstrip("/")
+    key = (cfg.get("api_key") or "").strip()
+    if not model or not base:
+        return False
+    if provider_requires_api_key(provider) and not key:
+        return False
+    return True
+
+
+def add_optional_auth(req, key):
+    key = (key or "").strip()
+    if key:
+        req.add_header("Authorization", "Bearer " + key)
+
+
 def chat_once(cfg, messages, timeout=300):
     if not cfg: raise RuntimeError("model config empty")
+    provider = (cfg.get("provider") or "custom").strip()
     key = (cfg.get("api_key") or "").strip()
-    if not key: raise RuntimeError(f"missing api_key for {cfg.get('label') or cfg.get('provider')}")
+    if provider_requires_api_key(provider) and not key:
+        raise RuntimeError(f"missing api_key for {cfg.get('label') or cfg.get('provider')}")
     model = (cfg.get("model") or cfg.get("modelName") or "").strip()
     if not model: raise RuntimeError("missing model name")
-    provider = (cfg.get("provider") or "custom").strip()
     base = (cfg.get("base_url") or cfg.get("baseUrl") or default_base(provider)).rstrip("/")
     if not base: raise RuntimeError("missing base_url")
     url = base + "/chat/completions"
@@ -64,7 +89,7 @@ def chat_once(cfg, messages, timeout=300):
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", "Bearer " + key)
+    add_optional_auth(req, key)
     t0 = time.time()
     log_event(f"LLM_CALL_START provider={provider} model={model} timeout={timeout}s messages={len(messages)}")
     try:
@@ -89,7 +114,7 @@ def chat_once(cfg, messages, timeout=300):
 def chat_chain(models, messages, timeout=300):
     errors = []
     for cfg in models:
-        if not cfg or not (cfg.get("api_key") or "").strip():
+        if not model_config_usable(cfg):
             continue
         label = cfg.get("label") or cfg.get("provider") or cfg.get("model") or "model"
         try:
@@ -865,11 +890,12 @@ def normalize_message_for_native(msg):
 
 def openai_chat_completion(cfg, messages, timeout=300, tools=None, tool_choice="auto", stream=True, max_tokens=None):
     if not cfg: raise RuntimeError("model config empty")
+    provider = (cfg.get("provider") or "custom").strip()
     key = (cfg.get("api_key") or "").strip()
-    if not key: raise RuntimeError(f"missing api_key for {cfg.get('label') or cfg.get('provider')}")
+    if provider_requires_api_key(provider) and not key:
+        raise RuntimeError(f"missing api_key for {cfg.get('label') or cfg.get('provider')}")
     model = (cfg.get("model") or cfg.get("modelName") or "").strip()
     if not model: raise RuntimeError("missing model name")
-    provider = (cfg.get("provider") or "custom").strip()
     base = (cfg.get("base_url") or cfg.get("baseUrl") or default_base(provider)).rstrip("/")
     if not base: raise RuntimeError("missing base_url")
     url = base + "/chat/completions"
@@ -887,7 +913,7 @@ def openai_chat_completion(cfg, messages, timeout=300, tools=None, tool_choice="
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", "Bearer " + key)
+    add_optional_auth(req, key)
     t0 = time.time()
     log_event(f"NATIVE_LLM_CALL_START provider={provider} model={model} timeout={timeout}s stream={stream} tools={bool(tools)} messages={len(messages)}")
     try:
@@ -1048,10 +1074,10 @@ def call_main_for_tools(req, cfg, messages):
     provider = (cfg.get("provider") or "custom").strip().lower()
     route_timeout = int(req.get("tool_route_timeout_seconds", 90))
     route_timeout = max(20, min(120, route_timeout))
-    if provider == "gemini":
+    if provider in ("gemini", "kaggle", "local_gemma"):
         legacy_timeout = int(req.get("legacy_tool_router_timeout_seconds", 45))
         legacy_timeout = max(20, min(90, legacy_timeout))
-        return legacy_json_tool_call(cfg, messages, timeout=legacy_timeout), "gemini-json-terminal"
+        return legacy_json_tool_call(cfg, messages, timeout=legacy_timeout), provider + "-json-terminal"
     return openai_chat_completion(
         cfg, messages, timeout=route_timeout, tools=tool_schemas(), tool_choice="auto",
         stream=True, max_tokens=int(req.get("tool_router_max_tokens", 256))
@@ -1254,12 +1280,12 @@ def main():
     req = json.loads(Path(ns.request).read_text(encoding="utf-8"))
     global SESSION_LOG_PATH
     SESSION_LOG_PATH = req.get("session_log_path") or str(Path.home() / ".oracle_ai_rescue" / "sessions" / ((req.get("session_id") or ("session_" + time.strftime("%Y%m%d_%H%M%S"))) + ".log"))
-    log_event("SESSION_START version=2.3.3 mode=" + str(req.get("runtime_mode") or "cloud-local-terminal-runtime") + " session_id=" + str(req.get("session_id") or ""))
+    log_event("SESSION_START version=2.4.0 mode=" + str(req.get("runtime_mode") or "cloud-local-terminal-runtime") + " session_id=" + str(req.get("session_id") or ""))
     main_model = req.get("main_model") or {}
-    models = [main_model] if main_model and (main_model.get("api_key") or "").strip() else []
+    models = [main_model] if model_config_usable(main_model) else []
     if not models:
-        log_event("MAIN_MODEL_MISSING api_key_or_config_empty")
-        print("# Oracle Rescue Agent 失敗\n\n主模型沒有可用 LLM API Key。主模型不使用備援；請修正目前選定模型的 API Key / Base URL / 模型名稱。")
+        log_event("MAIN_MODEL_MISSING model_config_unusable")
+        print("# Oracle Rescue Agent 失敗\n\n主模型設定不可用。請確認目前模型的 Provider / Base URL / 模型名稱；Kaggle 可不填 API Key，但 Gemini/NIM 必須填 API Key。")
         return 2
     # v2.3.3：統一使用單一 cloud-local run_terminal_command 工具循環，並加入硬性收斂與 Gemini 相容解析；
     # Gemini 使用同主模型 JSON 終端協議以避開 stream+tools 500，相同任務流程不做查專案特例。

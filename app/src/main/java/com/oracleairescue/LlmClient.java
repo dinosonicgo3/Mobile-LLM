@@ -203,10 +203,9 @@ class LlmClient {
                 if (m.length() > 0) cfg.kaggleModels.add(m);
             }
             if (cfg.kaggleModels.isEmpty()) {
-                cfg.kaggleModels.add("Qwen/Qwen3.6-27B");
-                cfg.kaggleModels.add("Qwen/Qwen3.6-35B");
+                cfg.kaggleModels.add("qwen36-27b-q4-gguf");
+                cfg.kaggleModels.add("qwen3.6-27b-q4");
                 cfg.kaggleModels.add("qwen3.6-27b");
-                cfg.kaggleModels.add("qwen3.6-35b");
             }
             if (cfg.kaggleDefaultModel == null || cfg.kaggleDefaultModel.trim().isEmpty()) cfg.kaggleDefaultModel = cfg.kaggleModels.get(0);
             return cfg;

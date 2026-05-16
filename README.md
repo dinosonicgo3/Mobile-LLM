@@ -1,3 +1,9 @@
+# v2.4.1 GGUF / llama.cpp + tunnel tools 收斂版重點
+
+本版將 Kaggle Qwen 啟動路徑改為 `dinosonicgo/qwen36-27b-q4-gguf-cache` 模型 dataset，並額外掛載 `dinosonicgo/qwen36-tunnel-tools` 工具 dataset。Kaggle kernel 會自動在 `/kaggle/input` 尋找 `.gguf`，並優先尋找工具 dataset 內的 `cloudflared` / `llama-server`；找不到時才下載 cloudflared 或現場編譯 llama.cpp。服務以 OpenAI-compatible `/v1/chat/completions` 對外提供，並在閒置 10 分鐘後關閉。Oracle Rescue Agent 對 Kaggle 不再使用 vLLM native tools，而是使用 JSON 終端工具協議，以提高工具調用相容性。
+
+---
+
 # OracleAIRescue v2.3.0 雲端本機單一終端 Runtime 修正版
 
 本版將雲端 Oracle Rescue Agent 改為通用 OpenAI-compatible native tools/tool_choice 工具循環。NVIDIA NIM / Google API 優先使用原生 tools 與串流工具調用；若端點不支援才退回短 JSON 相容協議。這是通用修正，不是只針對查專案：查找、讀檔、修程式、測試、刪除、停服務都走同一套工具循環。
@@ -32,7 +38,7 @@ v1.3.5 Java 原生版。此版加入 Kaggle Qwen 動態端點同步：App 可從
 
 - Google Gemini OpenAI-compatible API
 - NVIDIA NIM OpenAI-compatible API
-- Kaggle Qwen / vLLM / FastAPI OpenAI-compatible API
+- Kaggle Qwen / llama.cpp GGUF / FastAPI OpenAI-compatible API
 - 自訂 OpenAI-compatible Provider
 - API Key 手機本機加密保存
 - SSH 私鑰手機本機加密保存
@@ -53,6 +59,18 @@ v1.3.5 Java 原生版。此版加入 Kaggle Qwen 動態端點同步：App 可從
 - GitHub 設定熱更新
 - 熱更新設定一鍵回滾
 - GitHub Releases 版本清單，方便下載新版或舊版 APK
+
+
+### v2.4.1 Kaggle dataset 掛載
+
+GitHub Actions 的 `Start Kaggle Qwen API` workflow 會掛載兩個 Kaggle dataset：
+
+```text
+dinosonicgo/qwen36-27b-q4-gguf-cache
+dinosonicgo/qwen36-tunnel-tools
+```
+
+手機 App 內按「啟動 Kaggle Qwen」時，也會把 `tools_dataset_slug=dinosonicgo/qwen36-tunnel-tools` 一併傳給 workflow。若工具 dataset 內含 `cloudflared` 或 `llama-server`，Kaggle worker 會優先使用它們，減少每次啟動下載或編譯的時間。
 
 ## Kaggle Qwen 使用方式
 
