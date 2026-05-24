@@ -11,8 +11,8 @@ android {
         applicationId = "com.oracleairescue"
         minSdk = 26
         targetSdk = 35
-        versionCode = 76
-        versionName = "2.5.0"
+        versionCode = 78
+        versionName = "2.5.2"
     }
 
     signingConfigs {
