@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.4.0
+"""Oracle AI Rescue Agent v2.4.9
 Runs on the Oracle host. The Android app is only a remote controller/bridge.
 Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
 Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
 Full authority mode: the LLM may execute shell commands, remove projects, stop services, kill processes, and use sudo -n.
 No password prompt is used or requested. If sudo -n is unavailable, the command will fail and report the real permission error.
+
+[v2.4.9 FIX] Google API 500 Internal Error 根治：
+- 自動淨化 Gemini/Gemma 4 衝突參數 (移除 temperature, 轉換 max_completion_tokens)。
+- 強制保留並注入 reasoning_effort=high 確保深度思考模式。
+- 提高 Gemini legacy tool router timeout 至 120s，避免思考超時。
 """
 import argparse, base64, difflib, json, os, re, shlex, subprocess, sys, time, traceback, urllib.request, urllib.error
 from pathlib import Path
@@ -69,6 +74,24 @@ def add_optional_auth(req, key):
         req.add_header("Authorization", "Bearer " + key)
 
 
+def sanitize_gemini_payload(payload, provider, model):
+    """[v2.4.9 FIX] 針對 Google Gemini / Gemma 4 API 淨化參數，避免 500 錯誤。
+    保留 reasoning_effort，移除會衝突的 temperature，並轉換 max_tokens。
+    """
+    p = payload.copy()
+    is_gemini = (provider or "").lower() == "gemini" or "gemini" in (model or "").lower() or "gemma" in (model or "").lower()
+    if is_gemini:
+        # 思考模式下，自訂 temperature 極易導致 Google API 500 內部錯誤
+        p.pop("temperature", None)
+        # Google API 對於新模型推薦使用 max_completion_tokens
+        if "max_tokens" in p:
+            p["max_completion_tokens"] = p.pop("max_tokens")
+        # 確保啟用思考模式 (對應 App 端的 reasoning_effort=high)
+        if "reasoning_effort" not in p:
+            p["reasoning_effort"] = "high"
+    return p
+
+
 def chat_once(cfg, messages, timeout=300):
     if not cfg: raise RuntimeError("model config empty")
     provider = (cfg.get("provider") or "custom").strip()
@@ -86,6 +109,7 @@ def chat_once(cfg, messages, timeout=300):
         "temperature": float(cfg.get("temperature", 0.0)),
         "max_tokens": int(cfg.get("max_tokens", 1024)),
     }
+    payload = sanitize_gemini_payload(payload, provider, model)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
@@ -128,11 +152,7 @@ def chat_chain(models, messages, timeout=300):
 
 
 def safe_path(path):
-    """Full authority path check.
-
-    This is not a policy restriction; it only prevents shell/control-character injection.
-    Any absolute path is allowed, including /home, /opt, /srv, /var/www, /etc, /root, etc.
-    """
+    """Full authority path check."""
     p = (path or "").strip()
     if not p or not p.startswith("/"):
         return ""
@@ -150,7 +170,6 @@ def is_safe_read_command(cmd):
                " restart", " start ", " stop ", " enable ", " disable ", " install", " apt ", " yum ",
                " dnf ", " apk ", " pip install", " npm install", " tee ", " >", ">>", "| sh", "| bash"]
     if any(b in low for b in blocked): return False
-    # allow compound read-only commands with && and pipes when each command starts with common read-only binary
     allowed_starts = (
         "pwd", "ls", "cat", "head", "tail", "grep", "find", "du", "df", "free", "uptime", "date", "whoami", "hostname",
         "ss", "netstat", "docker ps", "docker logs", "docker inspect", "docker compose ls", "docker compose ps",
@@ -181,15 +200,8 @@ def run(cmd, timeout=90):
         return {"ok": False, "output": f"command failed: {type(e).__name__}: {e}"}
 
 
-
 def run_full(cmd, timeout=180):
-    """Full authority shell bridge.
-
-    No read-only policy is applied here. This intentionally allows rm, pkill,
-    systemctl, docker rm, crontab edits, sudo -n, etc.
-    The agent never prompts for sudo password; commands that require password
-    must use sudo -n or will fail and report the error.
-    """
+    """Full authority shell bridge."""
     if not cmd or not str(cmd).strip():
         return {"ok": False, "output": "空指令。"}
     c = str(cmd)
@@ -210,11 +222,6 @@ def shell_quote(x):
 
 
 def expand_target_terms(target):
-    """Expand common Chinese project names to folder/process aliases.
-
-    This is not model fallback. It is deterministic discovery so remove_project
-    can remove projects whose display name and directory slug differ.
-    """
     raw = (target or "").strip()
     terms = []
     def add(x):
@@ -237,7 +244,6 @@ def expand_target_terms(target):
     if "runtianxie" in low:
         for v in ["潤天蟹", "润天蟹", "hermes-runtianxie", "runtianxie-hermes"]: add(v)
     return terms
-
 
 
 def compact_lines(text, max_lines=80, max_chars=12000):
@@ -365,11 +371,6 @@ def score_candidate(query, info, terms):
 
 
 def discover_projects(query="", include_all=False):
-    """Autonomous live project discovery for programming maintenance.
-
-    This does not rely on fixed aliases only. It scans current Oracle directories,
-    git/project markers, configs, runtime dirs, services, crontab, processes and Docker.
-    """
     query = (query or "").strip()
     terms = expand_target_terms(query)
     dirs = scan_candidate_dirs()
@@ -402,7 +403,6 @@ def discover_projects(query="", include_all=False):
 
 
 def resolve_project_identity(query="", paths=None):
-    """Read identity evidence from candidate paths."""
     query = (query or "").strip()
     if isinstance(paths, str):
         paths = [paths]
@@ -497,11 +497,6 @@ def transcript_has_tool(transcript, tool_name):
 
 
 def final_static_guard(question, transcript, answer):
-    """Deterministic no-hallucination guard before the 31B verifier.
-
-    This is not another model call. It prevents the main model from skipping the
-    required programming-maintenance workflow even if it tries to output final.
-    """
     q = question or ""
     a = answer or ""
     t = "\n".join(transcript or [])
@@ -511,12 +506,10 @@ def final_static_guard(question, transcript, answer):
                      transcript_has_tool(transcript, "run_terminal_command") or transcript_has_tool(transcript, "terminal_exec") or
                      transcript_has_tool(transcript, "remove_project") or transcript_has_tool(transcript, "repair_file") or
                      transcript_has_tool(transcript, "read_file") or transcript_has_tool(transcript, "list_dir"))
-        # Pure command-like tests may use ssh_exec directly, but project/file/service maintenance must not finish without tools.
         if not (has_discovery or has_shell):
             return False, "最終回答被阻擋：這是程式/雲端維護任務，但尚未使用任何工具查證真實環境。請先用 run_terminal_command 查證。"
         project_words = ["專案", "查找", "存在", "移除", "刪除", "檢查", "維修", "修正", "服務", "檔案", "海參", "潤天蟹", "hermes", "openclaw"]
         if any(w in q.lower() for w in [x.lower() for x in project_words]) and not has_discovery:
-            # Allow if the model used shell_exec/ssh_exec and transcript contains project-marker evidence.
             evidence_markers = [".git", "README", "package.json", "pyproject.toml", "systemctl", "crontab", "ps aux", "find ", "/home/", "/opt/", "/srv/"]
             if not any(m.lower() in t.lower() for m in evidence_markers):
                 return False, "最終回答被阻擋：涉及專案/檔案/服務查找，但沒有 discover_projects/resolve_project_identity，也沒有足夠 shell 搜尋證據。"
@@ -530,17 +523,6 @@ def final_static_guard(question, transcript, answer):
     return True, "PASS"
 
 def remove_project(target="", paths=None):
-    """Remove/quarantine any project target with full authority.
-
-    This tool is intentionally powerful. It:
-    - discovers target-related paths/processes/services/crontab lines
-    - creates a tar.gz backup when possible
-    - moves discovered paths into quarantine, falling back to sudo -n mv
-    - kills target processes with pkill -f target using normal user and sudo -n
-    - stops/disables matching systemd units with sudo -n when found
-    - removes matching crontab lines for the current user
-    It does not ask for passwords.
-    """
     target = (target or "").strip()
     terms = expand_target_terms(target)
     if not target and not paths:
@@ -563,7 +545,6 @@ def remove_project(target="", paths=None):
                 discovered.append(sp)
 
     if target:
-        # Broad discovery: user home, common project roots, config roots and systemd units.
         find_cmd = (
             "find /home /opt /srv /var/www /etc/systemd/system "
             "-maxdepth 7 \\( -iname " + shell_quote(f"*{target}*") + " -o -path " + shell_quote(f"*{target}*") + " \\) "
@@ -582,7 +563,6 @@ def remove_project(target="", paths=None):
     report.append("==== DISCOVERED PATHS ====")
     report.extend(discovered or ["(none)"])
 
-    # Process/service cleanup by all known display names and slugs.
     if terms:
         report.append("==== KILL PROCESSES ====")
         for term in terms:
@@ -624,28 +604,24 @@ def remove_project(target="", paths=None):
         )
         report.append(run_full(cleanup, timeout=60)["output"])
 
-    # Backup and quarantine paths.
     report.append("==== BACKUP AND QUARANTINE PATHS ====")
     for sp in discovered:
         name = re.sub(r"[^A-Za-z0-9_.-]+", "_", sp.strip("/")) or "path"
         backup_file = backups / f"{safe_name}_{name}_{stamp}.tar.gz"
         qdest = quarantine / name
         report.append(f"--- path={sp} ---")
-        # Backup best effort.
         backup_cmd = "tar -czf " + shell_quote(str(backup_file)) + " -C / " + shell_quote(sp.lstrip("/"))
         backup_res = run_full(backup_cmd, timeout=300)
         if not backup_res["ok"]:
             backup_res = run_full("sudo -n " + backup_cmd, timeout=300)
         report.append("[backup]\n" + backup_res["output"])
 
-        # Move to quarantine; fallback to sudo -n mv.
         mv_cmd = "mkdir -p " + shell_quote(str(quarantine)) + " && mv -- " + shell_quote(sp) + " " + shell_quote(str(qdest))
         mv_res = run_full(mv_cmd, timeout=180)
         if not mv_res["ok"]:
             mv_res = run_full("sudo -n " + mv_cmd, timeout=180)
         report.append("[quarantine]\n" + mv_res["output"])
 
-    # Verify.
     report.append("==== VERIFY REMAINS ====")
     if terms:
         pattern = "|".join(re.escape(t) for t in terms)
@@ -703,7 +679,6 @@ def strip_code_fence(text):
 
 def parse_json_tool(text):
     x = (text or "").strip()
-    # code fence tolerant
     x = re.sub(r"^```(?:json)?\s*", "", x).strip()
     x = re.sub(r"```$", "", x).strip()
     try:
@@ -835,19 +810,7 @@ def execute_tool(req, models, tool_obj):
     return {"ok": False, "output": "未知工具：" + tool}
 
 
-
-# =========================
-# v2.3.3 cloud-local terminal runtime tool loop
-# =========================
-
 def tool_schemas():
-    """Exactly one Gemini-style terminal tool.
-
-    Do not expose project-specific tools.  The model decides shell commands;
-    this runtime executes them locally on the Oracle VM.  Output returned to
-    the model is intentionally capped, matching the working Gemini version's
-    small observation style.
-    """
     return [{
         "type": "function",
         "function": {
@@ -865,7 +828,6 @@ def tool_schemas():
     }]
 
 def build_runtime_system(req):
-    # Gemini-style, but cloud-local: short, operational, no fixed project list.
     return (
         "你是在 Oracle Cloud Ubuntu 主機本機執行的維護 Agent。"
         "你不知道目前有哪些專案，因為環境會變動；必須用 run_terminal_command 查證當下環境。"
@@ -879,7 +841,6 @@ def build_runtime_system(req):
 
 
 def normalize_message_for_native(msg):
-    """Keep OpenAI-compatible messages compact and valid."""
     role = msg.get("role")
     if role == "assistant" and msg.get("tool_calls"):
         return {"role":"assistant", "content": msg.get("content"), "tool_calls": msg.get("tool_calls")}
@@ -910,6 +871,8 @@ def openai_chat_completion(cfg, messages, timeout=300, tools=None, tool_choice="
         payload["tool_choice"] = tool_choice or "auto"
     if stream:
         payload["stream"] = True
+        
+    payload = sanitize_gemini_payload(payload, provider, model)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
@@ -976,7 +939,6 @@ def read_streaming_chat(resp, provider, model, t0):
                 cur["function"]["arguments"] += fn.get("arguments")
     content = "".join(content_parts)
     tool_calls = [tool_acc[i] for i in sorted(tool_acc.keys())]
-    # Some providers omit id in streaming chunks; synthesize a stable id.
     for i, tc in enumerate(tool_calls):
         if not tc.get("id"):
             tc["id"] = f"call_{int(time.time()*1000)}_{i}"
@@ -984,13 +946,7 @@ def read_streaming_chat(resp, provider, model, t0):
     return {"content": content, "tool_calls": tool_calls, "raw": None}
 
 
-
 def parse_loose_tool_protocol(text):
-    """Parse Gemma/Gemini-style textual tool blocks robustly.
-
-    Supports pure JSON, markdown fenced JSON, [TOOL_CALL] blocks,
-    tool => / args => notation, and TOOL:/ARGS: text.
-    """
     raw = text or ""
     obj = parse_json_tool(raw)
     if obj:
@@ -1024,11 +980,6 @@ def parse_loose_tool_protocol(text):
     return None
 
 def legacy_json_tool_call(cfg, messages, timeout=60):
-    """Compatibility fallback for endpoints/models that reject native tools.
-
-    Same main model, no fallback.  It uses a short terminal protocol instead of
-    OpenAI tools when a provider rejects stream+tools.
-    """
     short_tools = """
 只輸出一個工具呼叫或 final，不要長篇解釋。
 優先格式：
@@ -1062,21 +1013,14 @@ def legacy_json_tool_call(cfg, messages, timeout=60):
 
 
 def call_main_for_tools(req, cfg, messages):
-    """Route the main model to the single terminal tool.
-
-    v2.3.3 fixes:
-    - Google/Gemini: do NOT use native stream+tools because the uploaded log
-      showed HTTP 500 with gemma-4-31b-it. Use the same model via a short,
-      tolerant textual terminal protocol.
-    - NIM/OpenAI-compatible: use native streamed tools, bounded router timeout.
-    - Never chain stream -> non-stream -> legacy slow calls in the same step.
-    """
     provider = (cfg.get("provider") or "custom").strip().lower()
     route_timeout = int(req.get("tool_route_timeout_seconds", 90))
     route_timeout = max(20, min(120, route_timeout))
     if provider in ("gemini", "kaggle", "local_gemma"):
-        legacy_timeout = int(req.get("legacy_tool_router_timeout_seconds", 45))
-        legacy_timeout = max(20, min(90, legacy_timeout))
+        # [v2.4.9 FIX] Gemma 4 思考模式需要較長時間，預設給 120 秒避免超時
+        default_timeout = 120 if provider == "gemini" else 45
+        legacy_timeout = int(req.get("legacy_tool_router_timeout_seconds", default_timeout))
+        legacy_timeout = max(20, min(300, legacy_timeout))
         return legacy_json_tool_call(cfg, messages, timeout=legacy_timeout), provider + "-json-terminal"
     return openai_chat_completion(
         cfg, messages, timeout=route_timeout, tools=tool_schemas(), tool_choice="auto",
@@ -1085,7 +1029,6 @@ def call_main_for_tools(req, cfg, messages):
 
 
 def extract_textual_terminal_tool(content):
-    """Convert textual tool blocks into a native-looking terminal call."""
     obj = parse_loose_tool_protocol(content or "")
     if not obj:
         return []
@@ -1280,15 +1223,13 @@ def main():
     req = json.loads(Path(ns.request).read_text(encoding="utf-8"))
     global SESSION_LOG_PATH
     SESSION_LOG_PATH = req.get("session_log_path") or str(Path.home() / ".oracle_ai_rescue" / "sessions" / ((req.get("session_id") or ("session_" + time.strftime("%Y%m%d_%H%M%S"))) + ".log"))
-    log_event("SESSION_START version=2.4.0 mode=" + str(req.get("runtime_mode") or "cloud-local-terminal-runtime") + " session_id=" + str(req.get("session_id") or ""))
+    log_event("SESSION_START version=2.4.9 mode=" + str(req.get("runtime_mode") or "cloud-local-terminal-runtime") + " session_id=" + str(req.get("session_id") or ""))
     main_model = req.get("main_model") or {}
     models = [main_model] if model_config_usable(main_model) else []
     if not models:
         log_event("MAIN_MODEL_MISSING model_config_unusable")
         print("# Oracle Rescue Agent 失敗\n\n主模型設定不可用。請確認目前模型的 Provider / Base URL / 模型名稱；Kaggle 可不填 API Key，但 Gemini/NIM 必須填 API Key。")
         return 2
-    # v2.3.3：統一使用單一 cloud-local run_terminal_command 工具循環，並加入硬性收斂與 Gemini 相容解析；
-    # Gemini 使用同主模型 JSON 終端協議以避開 stream+tools 500，相同任務流程不做查專案特例。
     return run_native_tool_loop(req, models)
 
 if __name__ == "__main__":
