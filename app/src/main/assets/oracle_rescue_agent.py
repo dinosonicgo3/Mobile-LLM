@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.4.9
+"""Oracle AI Rescue Agent v2.5.0
 Runs on the Oracle host. The Android app is only a remote controller/bridge.
 Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
 Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
 Full authority mode: the LLM may execute shell commands, remove projects, stop services, kill processes, and use sudo -n.
 No password prompt is used or requested. If sudo -n is unavailable, the command will fail and report the real permission error.
 
-[v2.4.9 FIX] Google API 500 Internal Error 根治：
-- 自動淨化 Gemini/Gemma 4 衝突參數 (移除 temperature, 轉換 max_completion_tokens)。
-- 強制保留並注入 reasoning_effort=high 確保深度思考模式。
-- 提高 Gemini legacy tool router timeout 至 120s，避免思考超時。
+[v2.5.0 FIX] Google API 503 High Demand / 429 Rate Limit 自動重試機制：
+- 遇到 503/429 時自動進行指數退避重試 (5s -> 10s -> 20s)，最多 3 次。
+- 保留 v2.4.9 的參數淨化與思考模式保護。
+- 嚴格遵守主模型不備援鐵律，重試失敗才如實報錯。
 """
 import argparse, base64, difflib, json, os, re, shlex, subprocess, sys, time, traceback, urllib.request, urllib.error
 from pathlib import Path
@@ -75,18 +75,13 @@ def add_optional_auth(req, key):
 
 
 def sanitize_gemini_payload(payload, provider, model):
-    """[v2.4.9 FIX] 針對 Google Gemini / Gemma 4 API 淨化參數，避免 500 錯誤。
-    保留 reasoning_effort，移除會衝突的 temperature，並轉換 max_tokens。
-    """
+    """[v2.4.9 FIX] 針對 Google Gemini / Gemma 4 API 淨化參數，避免 500 錯誤。"""
     p = payload.copy()
     is_gemini = (provider or "").lower() == "gemini" or "gemini" in (model or "").lower() or "gemma" in (model or "").lower()
     if is_gemini:
-        # 思考模式下，自訂 temperature 極易導致 Google API 500 內部錯誤
         p.pop("temperature", None)
-        # Google API 對於新模型推薦使用 max_completion_tokens
         if "max_tokens" in p:
             p["max_completion_tokens"] = p.pop("max_tokens")
-        # 確保啟用思考模式 (對應 App 端的 reasoning_effort=high)
         if "reasoning_effort" not in p:
             p["reasoning_effort"] = "high"
     return p
@@ -111,28 +106,38 @@ def chat_once(cfg, messages, timeout=300):
     }
     payload = sanitize_gemini_payload(payload, provider, model)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    add_optional_auth(req, key)
+    
     t0 = time.time()
-    log_event(f"LLM_CALL_START provider={provider} model={model} timeout={timeout}s messages={len(messages)}")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8", "replace")
-    except TimeoutError as e:
-        log_event(f"LLM_CALL_TIMEOUT provider={provider} model={model} elapsed={time.time()-t0:.1f}s")
-        raise TimeoutError(f"LLM API read timed out after {timeout}s; provider={provider}; model={model}; base={base}; note=NVIDIA_NIM_large_models_may_need_up_to_300s") from e
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace") if e.fp else ""
-        log_event(f"LLM_CALL_HTTP_ERROR provider={provider} model={model} code={e.code} elapsed={time.time()-t0:.1f}s body_head={limit(body, 500)}")
-        raise RuntimeError(f"LLM API HTTP {e.code}; provider={provider}; model={model}; body={limit(body, 3000)}") from e
-    except Exception as e:
-        log_event(f"LLM_CALL_ERROR provider={provider} model={model} error={type(e).__name__}: {e} elapsed={time.time()-t0:.1f}s")
-        raise
-    root = json.loads(body)
-    content = root["choices"][0]["message"].get("content", "")
-    log_event(f"LLM_CALL_OK provider={provider} model={model} elapsed={time.time()-t0:.1f}s content_length={len(content or '')}")
-    return content
+    max_retries = 3
+    for attempt in range(max_retries + 1):
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        add_optional_auth(req, key)
+        
+        log_event(f"LLM_CALL_START provider={provider} model={model} timeout={timeout}s messages={len(messages)} attempt={attempt+1}")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8", "replace")
+            root = json.loads(body)
+            content = root["choices"][0]["message"].get("content", "")
+            log_event(f"LLM_CALL_OK provider={provider} model={model} elapsed={time.time()-t0:.1f}s content_length={len(content or '')}")
+            return content
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace") if e.fp else ""
+            # [v2.5.0 FIX] 503 High Demand / 429 Rate Limit 自動重試
+            if e.code in (429, 503) and attempt < max_retries:
+                wait_time = 5 * (2 ** attempt)
+                log_event(f"LLM_CALL_RETRY provider={provider} model={model} code={e.code} high_demand attempt={attempt+1}/{max_retries} wait={wait_time}s")
+                time.sleep(wait_time)
+                continue
+            log_event(f"LLM_CALL_HTTP_ERROR provider={provider} model={model} code={e.code} elapsed={time.time()-t0:.1f}s body_head={limit(body, 500)}")
+            raise RuntimeError(f"LLM API HTTP {e.code}; provider={provider}; model={model}; body={limit(body, 3000)}") from e
+        except TimeoutError as e:
+            log_event(f"LLM_CALL_TIMEOUT provider={provider} model={model} elapsed={time.time()-t0:.1f}s")
+            raise TimeoutError(f"LLM API read timed out after {timeout}s; provider={provider}; model={model}; base={base}; note=NVIDIA_NIM_large_models_may_need_up_to_300s") from e
+        except Exception as e:
+            log_event(f"LLM_CALL_ERROR provider={provider} model={model} error={type(e).__name__}: {e} elapsed={time.time()-t0:.1f}s")
+            raise
 
 
 def chat_chain(models, messages, timeout=300):
@@ -152,7 +157,6 @@ def chat_chain(models, messages, timeout=300):
 
 
 def safe_path(path):
-    """Full authority path check."""
     p = (path or "").strip()
     if not p or not p.startswith("/"):
         return ""
@@ -201,7 +205,6 @@ def run(cmd, timeout=90):
 
 
 def run_full(cmd, timeout=180):
-    """Full authority shell bridge."""
     if not cmd or not str(cmd).strip():
         return {"ok": False, "output": "空指令。"}
     c = str(cmd)
@@ -874,32 +877,41 @@ def openai_chat_completion(cfg, messages, timeout=300, tools=None, tool_choice="
         
     payload = sanitize_gemini_payload(payload, provider, model)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    add_optional_auth(req, key)
+    
     t0 = time.time()
-    log_event(f"NATIVE_LLM_CALL_START provider={provider} model={model} timeout={timeout}s stream={stream} tools={bool(tools)} messages={len(messages)}")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if stream:
-                return read_streaming_chat(resp, provider, model, t0)
-            body = resp.read().decode("utf-8", "replace")
-    except TimeoutError as e:
-        log_event(f"NATIVE_LLM_CALL_TIMEOUT provider={provider} model={model} elapsed={time.time()-t0:.1f}s")
-        raise TimeoutError(f"LLM API read timed out after {timeout}s; provider={provider}; model={model}; base={base}") from e
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace") if e.fp else ""
-        log_event(f"NATIVE_LLM_CALL_HTTP_ERROR provider={provider} model={model} code={e.code} elapsed={time.time()-t0:.1f}s body_head={limit(body, 700)}")
-        raise RuntimeError(f"LLM API HTTP {e.code}; provider={provider}; model={model}; body={limit(body, 3000)}") from e
-    except Exception as e:
-        log_event(f"NATIVE_LLM_CALL_ERROR provider={provider} model={model} error={type(e).__name__}: {e} elapsed={time.time()-t0:.1f}s")
-        raise
-    root = json.loads(body)
-    msg = root["choices"][0].get("message") or {}
-    content = msg.get("content") or ""
-    tool_calls = msg.get("tool_calls") or []
-    log_event(f"NATIVE_LLM_CALL_OK provider={provider} model={model} elapsed={time.time()-t0:.1f}s content_length={len(content)} tool_calls={len(tool_calls)}")
-    return {"content": content, "tool_calls": tool_calls, "raw": root}
+    max_retries = 3
+    for attempt in range(max_retries + 1):
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        add_optional_auth(req, key)
+        log_event(f"NATIVE_LLM_CALL_START provider={provider} model={model} timeout={timeout}s stream={stream} tools={bool(tools)} messages={len(messages)} attempt={attempt+1}")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if stream:
+                    return read_streaming_chat(resp, provider, model, t0)
+                body = resp.read().decode("utf-8", "replace")
+            root = json.loads(body)
+            msg = root["choices"][0].get("message") or {}
+            content = msg.get("content") or ""
+            tool_calls = msg.get("tool_calls") or []
+            log_event(f"NATIVE_LLM_CALL_OK provider={provider} model={model} elapsed={time.time()-t0:.1f}s content_length={len(content)} tool_calls={len(tool_calls)}")
+            return {"content": content, "tool_calls": tool_calls, "raw": root}
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace") if e.fp else ""
+            # [v2.5.0 FIX] 503 High Demand / 429 Rate Limit 自動重試
+            if e.code in (429, 503) and attempt < max_retries:
+                wait_time = 5 * (2 ** attempt)
+                log_event(f"NATIVE_LLM_CALL_RETRY provider={provider} model={model} code={e.code} high_demand attempt={attempt+1}/{max_retries} wait={wait_time}s")
+                time.sleep(wait_time)
+                continue
+            log_event(f"NATIVE_LLM_CALL_HTTP_ERROR provider={provider} model={model} code={e.code} elapsed={time.time()-t0:.1f}s body_head={limit(body, 700)}")
+            raise RuntimeError(f"LLM API HTTP {e.code}; provider={provider}; model={model}; body={limit(body, 3000)}") from e
+        except TimeoutError as e:
+            log_event(f"NATIVE_LLM_CALL_TIMEOUT provider={provider} model={model} elapsed={time.time()-t0:.1f}s")
+            raise TimeoutError(f"LLM API read timed out after {timeout}s; provider={provider}; model={model}; base={base}") from e
+        except Exception as e:
+            log_event(f"NATIVE_LLM_CALL_ERROR provider={provider} model={model} error={type(e).__name__}: {e} elapsed={time.time()-t0:.1f}s")
+            raise
 
 
 def read_streaming_chat(resp, provider, model, t0):
@@ -1017,7 +1029,6 @@ def call_main_for_tools(req, cfg, messages):
     route_timeout = int(req.get("tool_route_timeout_seconds", 90))
     route_timeout = max(20, min(120, route_timeout))
     if provider in ("gemini", "kaggle", "local_gemma"):
-        # [v2.4.9 FIX] Gemma 4 思考模式需要較長時間，預設給 120 秒避免超時
         default_timeout = 120 if provider == "gemini" else 45
         legacy_timeout = int(req.get("legacy_tool_router_timeout_seconds", default_timeout))
         legacy_timeout = max(20, min(300, legacy_timeout))
@@ -1223,7 +1234,7 @@ def main():
     req = json.loads(Path(ns.request).read_text(encoding="utf-8"))
     global SESSION_LOG_PATH
     SESSION_LOG_PATH = req.get("session_log_path") or str(Path.home() / ".oracle_ai_rescue" / "sessions" / ((req.get("session_id") or ("session_" + time.strftime("%Y%m%d_%H%M%S"))) + ".log"))
-    log_event("SESSION_START version=2.4.9 mode=" + str(req.get("runtime_mode") or "cloud-local-terminal-runtime") + " session_id=" + str(req.get("session_id") or ""))
+    log_event("SESSION_START version=2.5.0 mode=" + str(req.get("runtime_mode") or "cloud-local-terminal-runtime") + " session_id=" + str(req.get("session_id") or ""))
     main_model = req.get("main_model") or {}
     models = [main_model] if model_config_usable(main_model) else []
     if not models:
