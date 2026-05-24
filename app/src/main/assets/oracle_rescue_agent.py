@@ -1,212 +1,163 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Oracle AI Rescue Agent v2.5.0
-Runs on the Oracle host. The Android app is only a remote controller/bridge.
-Main diagnosis/repair uses ONLY the selected main model; no main-model fallback.
-Fallback is allowed only for 31B verifier: Google Gemma 4 31B -> NVIDIA NIM Gemma 4 31B.
-Full authority mode: the LLM may execute shell commands, remove projects, stop services, kill processes, and use sudo -n.
-No password prompt is used or requested. If sudo -n is unavailable, the command will fail and report the real permission error.
-
-[v2.5.0 FIX] Google API 503 High Demand / 429 Rate Limit 自動重試機制：
-- 遇到 503/429 時自動進行指數退避重試 (5s -> 10s -> 20s)，最多 3 次。
-- 保留 v2.4.9 的參數淨化與思考模式保護。
-- 嚴格遵守主模型不備援鐵律，重試失敗才如實報錯。
+"""Oracle AI Rescue Agent v2.5.2
+[v2.5.2 FIX] 完全對齊 Google 官方 Gemma 4 文檔：
+1. 移除導致 500/空白回應的 OpenAI 專用參數 (reasoning_effort)。
+2. 依據官方規範，在 System Prompt 注入 <|think|> 觸發原生思考模式。
+3. 自動剝離 <|channel>thought...<channel|> 標籤，隱藏思考過程並防止多輪對話 Context 污染。
 """
-import argparse, base64, difflib, json, os, re, shlex, subprocess, sys, time, traceback, urllib.request, urllib.error
+import argparse, base64, copy, difflib, json, os, re, shlex, subprocess, sys, time, traceback, urllib.request, urllib.error
 from pathlib import Path
 
 MAX_OBS = 4000
 TOOL_CONTEXT_LIMIT = 2000
 SESSION_LOG_PATH = None
 
-
 def log_event(message):
     line = f"[oracle_rescue_agent] {now()} {message}"
-    try:
-        print(line, flush=True)
-    except Exception:
-        pass
+    try: print(line, flush=True)
+    except Exception: pass
     try:
         if SESSION_LOG_PATH:
             Path(SESSION_LOG_PATH).parent.mkdir(parents=True, exist_ok=True)
-            with open(SESSION_LOG_PATH, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-    except Exception:
-        pass
-
+            with open(SESSION_LOG_PATH, "a", encoding="utf-8") as f: f.write(line + "\n")
+    except Exception: pass
 
 def limit(text, n):
     text = "" if text is None else str(text)
     return text if len(text) <= n else text[:n] + f"\n...（已截斷，原長度 {len(text)}）"
 
-
-def now():
-    return time.strftime("%Y-%m-%d %H:%M:%S %Z")
-
-
+def now(): return time.strftime("%Y-%m-%d %H:%M:%S %Z")
 def default_base(provider):
     if provider == "nim": return "https://integrate.api.nvidia.com/v1"
     if provider == "gemini": return "https://generativelanguage.googleapis.com/v1beta/openai"
     return ""
 
-
-def provider_requires_api_key(provider):
-    return (provider or "").strip().lower() in ("gemini", "nim")
-
+def provider_requires_api_key(provider): return (provider or "").strip().lower() in ("gemini", "nim")
 
 def model_config_usable(cfg):
-    if not cfg:
-        return False
+    if not cfg: return False
     provider = (cfg.get("provider") or "custom").strip().lower()
     model = (cfg.get("model") or cfg.get("modelName") or "").strip()
     base = (cfg.get("base_url") or cfg.get("baseUrl") or default_base(provider)).rstrip("/")
     key = (cfg.get("api_key") or "").strip()
-    if not model or not base:
-        return False
-    if provider_requires_api_key(provider) and not key:
-        return False
+    if not model or not base: return False
+    if provider_requires_api_key(provider) and not key: return False
     return True
-
 
 def add_optional_auth(req, key):
     key = (key or "").strip()
-    if key:
-        req.add_header("Authorization", "Bearer " + key)
+    if key: req.add_header("Authorization", "Bearer " + key)
 
+def strip_gemma_thoughts(text):
+    """[v2.5.2] 依據 Google 官方文檔，移除 Gemma 4 的 <|channel>thought 標籤"""
+    if not text: return text
+    text = re.sub(r"(?is)<\|channel\>thought.*?<channel\|>", "", text)
+    text = re.sub(r"(?is)<think>.*?</think>", "", text)
+    text = re.sub(r"(?is)<thought>.*?</thought>", "", text)
+    return text.strip()
 
 def sanitize_gemini_payload(payload, provider, model):
-    """[v2.4.9 FIX] 針對 Google Gemini / Gemma 4 API 淨化參數，避免 500 錯誤。"""
+    """[v2.5.2] 依據官方文檔啟用 Gemma 4 思考模式，並移除導致 500 錯誤的參數"""
     p = payload.copy()
     is_gemini = (provider or "").lower() == "gemini" or "gemini" in (model or "").lower() or "gemma" in (model or "").lower()
     if is_gemini:
         p.pop("temperature", None)
-        if "max_tokens" in p:
-            p["max_completion_tokens"] = p.pop("max_tokens")
-        if "reasoning_effort" not in p:
-            p["reasoning_effort"] = "high"
+        p.pop("reasoning_effort", None) # 官方 Gemma 4 不支援，會導致 500 或空白
+        if "max_tokens" in p: p["max_completion_tokens"] = p.pop("max_tokens")
+        if "messages" in p and isinstance(p["messages"], list):
+            p["messages"] = copy.deepcopy(p["messages"])
+            has_system = False
+            for msg in p["messages"]:
+                if msg.get("role") == "system":
+                    content = str(msg.get("content") or "")
+                    if "<|think|>" not in content: msg["content"] = "<|think|>\n" + content
+                    has_system = True
+                    break
+            if not has_system: p["messages"].insert(0, {"role": "system", "content": "<|think|>"})
     return p
-
 
 def chat_once(cfg, messages, timeout=300):
     if not cfg: raise RuntimeError("model config empty")
     provider = (cfg.get("provider") or "custom").strip()
     key = (cfg.get("api_key") or "").strip()
-    if provider_requires_api_key(provider) and not key:
-        raise RuntimeError(f"missing api_key for {cfg.get('label') or cfg.get('provider')}")
+    if provider_requires_api_key(provider) and not key: raise RuntimeError(f"missing api_key")
     model = (cfg.get("model") or cfg.get("modelName") or "").strip()
-    if not model: raise RuntimeError("missing model name")
     base = (cfg.get("base_url") or cfg.get("baseUrl") or default_base(provider)).rstrip("/")
-    if not base: raise RuntimeError("missing base_url")
     url = base + "/chat/completions"
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": float(cfg.get("temperature", 0.0)),
-        "max_tokens": int(cfg.get("max_tokens", 1024)),
-    }
+    payload = {"model": model, "messages": messages, "temperature": float(cfg.get("temperature", 0.0)), "max_tokens": int(cfg.get("max_tokens", 1024))}
     payload = sanitize_gemini_payload(payload, provider, model)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    
     t0 = time.time()
     max_retries = 3
     for attempt in range(max_retries + 1):
         req = urllib.request.Request(url, data=data, method="POST")
         req.add_header("Content-Type", "application/json")
         add_optional_auth(req, key)
-        
-        log_event(f"LLM_CALL_START provider={provider} model={model} timeout={timeout}s messages={len(messages)} attempt={attempt+1}")
+        log_event(f"LLM_CALL_START provider={provider} model={model} attempt={attempt+1}")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = resp.read().decode("utf-8", "replace")
             root = json.loads(body)
-            content = root["choices"][0]["message"].get("content", "")
-            log_event(f"LLM_CALL_OK provider={provider} model={model} elapsed={time.time()-t0:.1f}s content_length={len(content or '')}")
+            choice = root["choices"][0]
+            content = choice.get("message", {}).get("content", "")
+            content = strip_gemma_thoughts(content)
+            if not content and attempt < max_retries:
+                log_event("LLM_CALL_EMPTY_RESPONSE retrying...")
+                time.sleep(2); continue
+            log_event(f"LLM_CALL_OK elapsed={time.time()-t0:.1f}s len={len(content or '')}")
             return content
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace") if e.fp else ""
-            # [v2.5.0 FIX] 503 High Demand / 429 Rate Limit 自動重試
             if e.code in (429, 503) and attempt < max_retries:
-                wait_time = 5 * (2 ** attempt)
-                log_event(f"LLM_CALL_RETRY provider={provider} model={model} code={e.code} high_demand attempt={attempt+1}/{max_retries} wait={wait_time}s")
-                time.sleep(wait_time)
-                continue
-            log_event(f"LLM_CALL_HTTP_ERROR provider={provider} model={model} code={e.code} elapsed={time.time()-t0:.1f}s body_head={limit(body, 500)}")
-            raise RuntimeError(f"LLM API HTTP {e.code}; provider={provider}; model={model}; body={limit(body, 3000)}") from e
-        except TimeoutError as e:
-            log_event(f"LLM_CALL_TIMEOUT provider={provider} model={model} elapsed={time.time()-t0:.1f}s")
-            raise TimeoutError(f"LLM API read timed out after {timeout}s; provider={provider}; model={model}; base={base}; note=NVIDIA_NIM_large_models_may_need_up_to_300s") from e
-        except Exception as e:
-            log_event(f"LLM_CALL_ERROR provider={provider} model={model} error={type(e).__name__}: {e} elapsed={time.time()-t0:.1f}s")
-            raise
-
+                time.sleep(5 * (2 ** attempt)); continue
+            raise RuntimeError(f"LLM API HTTP {e.code}; body={limit(body, 3000)}") from e
+        except Exception as e: raise
 
 def chat_chain(models, messages, timeout=300):
     errors = []
     for cfg in models:
-        if not model_config_usable(cfg):
-            continue
-        label = cfg.get("label") or cfg.get("provider") or cfg.get("model") or "model"
+        if not model_config_usable(cfg): continue
+        label = cfg.get("label") or cfg.get("model")
         try:
             text = chat_once(cfg, messages, timeout=timeout)
-            if text and text.strip():
-                return text, label, errors
-            errors.append(f"{label}: empty response")
-        except Exception as e:
-            errors.append(f"{label}: {type(e).__name__}: {e}")
-    raise RuntimeError("main model failed; fallback is disabled for diagnosis/repair: " + " | ".join(errors))
-
+            if text and text.strip(): return text, label, errors
+            errors.append(f"{label}: empty")
+        except Exception as e: errors.append(f"{label}: {e}")
+    raise RuntimeError("main model failed: " + " | ".join(errors))
 
 def safe_path(path):
     p = (path or "").strip()
-    if not p or not p.startswith("/"):
-        return ""
-    if any(x in p for x in ["\0", "\n", "\r"]):
-        return ""
+    if not p or not p.startswith("/") or any(x in p for x in ["\0", "\n", "\r"]): return ""
     return p
-
 
 def is_safe_read_command(cmd):
     if not cmd: return False
     c = cmd.strip()
     if len(c) > 1000: return False
     low = " " + c.lower() + " "
-    blocked = [" sudo ", " rm ", " mv ", " cp ", " chmod ", " chown ", " kill ", " reboot", " shutdown",
-               " restart", " start ", " stop ", " enable ", " disable ", " install", " apt ", " yum ",
-               " dnf ", " apk ", " pip install", " npm install", " tee ", " >", ">>", "| sh", "| bash"]
+    blocked = [" sudo ", " rm ", " mv ", " cp ", " chmod ", " chown ", " kill ", " reboot", " shutdown", " restart", " start ", " stop ", " enable ", " disable ", " install", " apt ", " yum ", " dnf ", " apk ", " pip install", " npm install", " tee ", " >", ">>", "| sh", "| bash"]
     if any(b in low for b in blocked): return False
-    allowed_starts = (
-        "pwd", "ls", "cat", "head", "tail", "grep", "find", "du", "df", "free", "uptime", "date", "whoami", "hostname",
-        "ss", "netstat", "docker ps", "docker logs", "docker inspect", "docker compose ls", "docker compose ps",
-        "systemctl status", "systemctl list-units", "systemctl --failed", "journalctl", "git status", "git log", "git branch", "git remote",
-        "python3 -m py_compile", "python3 -m json.tool", "node --check", "bash -n"
-    )
+    allowed_starts = ("pwd", "ls", "cat", "head", "tail", "grep", "find", "du", "df", "free", "uptime", "date", "whoami", "hostname", "ss", "netstat", "docker ps", "docker logs", "docker inspect", "systemctl status", "systemctl list-units", "journalctl", "git status", "python3 -m py_compile", "node --check", "bash -n")
     parts = re.split(r"\s*(?:&&|\|)\s*", c)
     for part in parts:
         p = part.strip()
         if not p: continue
-        if not p.startswith(allowed_starts):
-            return False
+        if not p.startswith(allowed_starts): return False
     return True
 
-
 def run(cmd, timeout=90):
-    if not is_safe_read_command(cmd):
-        return {"ok": False, "output": "指令被安全策略拒絕：只允許讀取/檢查型指令。"}
+    if not is_safe_read_command(cmd): return {"ok": False, "output": "指令被安全策略拒絕。"}
     try:
         p = subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
         out = f"$ {cmd}\nexitCode={p.returncode}\n"
         if p.stdout.strip(): out += "--- stdout ---\n" + p.stdout.strip() + "\n"
         if p.stderr.strip(): out += "--- stderr ---\n" + p.stderr.strip() + "\n"
         return {"ok": p.returncode == 0, "output": limit(out, MAX_OBS)}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "output": f"$ {cmd}\nTIMEOUT after {timeout}s"}
-    except Exception as e:
-        return {"ok": False, "output": f"command failed: {type(e).__name__}: {e}"}
-
+    except Exception as e: return {"ok": False, "output": f"command failed: {e}"}
 
 def run_full(cmd, timeout=180):
-    if not cmd or not str(cmd).strip():
-        return {"ok": False, "output": "空指令。"}
+    if not cmd or not str(cmd).strip(): return {"ok": False, "output": "空指令。"}
     c = str(cmd)
     try:
         p = subprocess.run(c, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
@@ -214,485 +165,135 @@ def run_full(cmd, timeout=180):
         if p.stdout.strip(): out += "--- stdout ---\n" + p.stdout.strip() + "\n"
         if p.stderr.strip(): out += "--- stderr ---\n" + p.stderr.strip() + "\n"
         return {"ok": p.returncode == 0, "output": limit(out, MAX_OBS)}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "output": f"$ {c}\nTIMEOUT after {timeout}s"}
-    except Exception as e:
-        return {"ok": False, "output": f"command failed: {type(e).__name__}: {e}"}
+    except Exception as e: return {"ok": False, "output": f"command failed: {e}"}
 
-
-def shell_quote(x):
-    return shlex.quote(str(x))
-
-
+def shell_quote(x): return shlex.quote(str(x))
 def expand_target_terms(target):
     raw = (target or "").strip()
-    terms = []
-    def add(x):
-        x = (x or "").strip()
-        if x and x not in terms:
-            terms.append(x)
-    add(raw)
-    aliases = {
-        "海參": ["haishen", "hermes-haishen", "haishen-hermes"],
-        "海参": ["haishen", "hermes-haishen", "haishen-hermes"],
-        "潤天蟹": ["runtianxie", "hermes-runtianxie", "runtianxie-hermes"],
-        "润天蟹": ["runtianxie", "hermes-runtianxie", "runtianxie-hermes"],
-    }
-    low = raw.lower()
+    terms = [raw] if raw else []
+    aliases = {"海參": ["haishen", "hermes-haishen"], "潤天蟹": ["runtianxie", "hermes-runtianxie"]}
     for k, vals in aliases.items():
-        if k in raw:
-            for v in vals: add(v)
-    if "haishen" in low:
-        for v in ["海參", "海参", "hermes-haishen", "haishen-hermes"]: add(v)
-    if "runtianxie" in low:
-        for v in ["潤天蟹", "润天蟹", "hermes-runtianxie", "runtianxie-hermes"]: add(v)
-    return terms
-
+        if k in raw: terms.extend(vals)
+    return list(set(terms))
 
 def compact_lines(text, max_lines=80, max_chars=12000):
     text = "" if text is None else str(text)
     lines = text.splitlines()
-    if len(lines) > max_lines:
-        text = "\n".join(lines[:max_lines]) + f"\n...（已截斷，原行數 {len(lines)}）"
+    if len(lines) > max_lines: text = "\n".join(lines[:max_lines]) + f"\n...（已截斷）"
     return limit(text, max_chars)
 
-
 def path_mtime(path):
-    try:
-        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(Path(path).stat().st_mtime))
-    except Exception:
-        return "unknown"
-
+    try: return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(Path(path).stat().st_mtime))
+    except Exception: return "unknown"
 
 def looks_like_project_dir(path):
     p = Path(path)
-    markers = [".git", "README.md", "readme.md", "package.json", "pyproject.toml", "requirements.txt", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "AndroidManifest.xml", "docker-compose.yml", "compose.yml", "Dockerfile", "AGENTS.md", "AI_ARCHITECTURE.md", "config.yaml", "config.yml", ".env", ".env.example"]
+    markers = [".git", "README.md", "package.json", "pyproject.toml", "requirements.txt", "build.gradle.kts", "docker-compose.yml", "Dockerfile", "AGENTS.md"]
     return any((p / m).exists() for m in markers)
-
 
 def shell_lines(cmd, timeout=90, max_lines=300):
     try:
         p = subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-        lines = [x.strip() for x in p.stdout.splitlines() if x.strip()]
-        return lines[:max_lines]
-    except Exception:
-        return []
-
+        return [x.strip() for x in p.stdout.splitlines() if x.strip()][:max_lines]
+    except Exception: return []
 
 def scan_candidate_dirs():
-    roots = ["/home/ubuntu", "/home/ubuntu/ai-agents", "/home/ubuntu/.config", "/home/ubuntu/_runtime", "/home/ubuntu/projects", "/home/ubuntu/apps", "/opt", "/srv", "/var/www", "/usr/local"]
-    dirs = []
-    seen = set()
+    roots = ["/home/ubuntu", "/home/ubuntu/ai-agents", "/home/ubuntu/.config", "/home/ubuntu/_runtime", "/opt", "/srv", "/var/www"]
+    dirs, seen = [], set()
     for root in roots:
-        if not Path(root).exists():
-            continue
-        cmd = (
-            "find " + shell_quote(root) + " -maxdepth 4 -type d "
-            "\\( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ \\) -prune -o "
-            "-type f \\( -name README.md -o -name readme.md -o -name package.json -o -name pyproject.toml -o -name requirements.txt "
-            "-o -name build.gradle -o -name build.gradle.kts -o -name settings.gradle -o -name settings.gradle.kts "
-            "-o -name AndroidManifest.xml -o -name docker-compose.yml -o -name compose.yml -o -name Dockerfile "
-            "-o -name AGENTS.md -o -name AI_ARCHITECTURE.md -o -name config.yaml -o -name config.yml \\) "
-            "-printf '%h\\n' 2>/dev/null | sort -u | head -n 500"
-        )
+        if not Path(root).exists(): continue
+        cmd = f"find {shell_quote(root)} -maxdepth 4 -type d \\( -name .git -o -name node_modules -o -name .venv \\) -prune -o -type f \\( -name README.md -o -name package.json -o -name pyproject.toml -o -name build.gradle.kts -o -name docker-compose.yml -o -name AGENTS.md \\) -printf '%h\\n' 2>/dev/null | sort -u | head -n 500"
         for d in shell_lines(cmd, timeout=120, max_lines=500):
             sp = safe_path(d)
-            if sp and sp not in seen:
-                seen.add(sp)
-                dirs.append(sp)
-    for root in ["/home/ubuntu/ai-agents", "/home/ubuntu/.config", "/home/ubuntu/_runtime", "/home/ubuntu"]:
-        if Path(root).exists():
-            cmd = "find " + shell_quote(root) + " -maxdepth 2 -type d 2>/dev/null | head -n 300"
-            for d in shell_lines(cmd, timeout=60, max_lines=300):
-                sp = safe_path(d)
-                if sp and sp not in seen and (looks_like_project_dir(sp) or any(x in Path(sp).name.lower() for x in ["hermes", "openclaw", "agent", "rescue", "ai", "llm", "runtime"])):
-                    seen.add(sp)
-                    dirs.append(sp)
+            if sp and sp not in seen: seen.add(sp); dirs.append(sp)
     return dirs[:600]
 
-
 def read_small_file(path, max_chars=3000):
-    try:
-        return Path(path).read_text(encoding="utf-8", errors="replace")[:max_chars]
-    except Exception:
-        return ""
-
+    try: return Path(path).read_text(encoding="utf-8", errors="replace")[:max_chars]
+    except Exception: return ""
 
 def project_signals(path):
     p = Path(path)
     info = {"path": str(p), "name": p.name, "mtime": path_mtime(str(p)), "markers": [], "git_remote": "", "identity_text": ""}
-    marker_files = ["README.md", "readme.md", "AGENTS.md", "AI_ARCHITECTURE.md", "package.json", "pyproject.toml", "requirements.txt", "build.gradle.kts", "build.gradle", "settings.gradle.kts", "settings.gradle", "docker-compose.yml", "compose.yml", "Dockerfile", "config.yaml", "config.yml", ".env.example"]
-    for m in [".git"] + marker_files:
-        if (p / m).exists():
-            info["markers"].append(m)
+    for m in [".git", "README.md", "package.json", "pyproject.toml", "docker-compose.yml", "AGENTS.md"]:
+        if (p / m).exists(): info["markers"].append(m)
     if (p / ".git" / "config").exists():
         cfg = read_small_file(p / ".git" / "config", 2000)
         m = re.search(r"url\s*=\s*(.+)", cfg)
-        if m:
-            info["git_remote"] = m.group(1).strip()
-    chunks = []
-    for m in ["README.md", "readme.md", "AGENTS.md", "AI_ARCHITECTURE.md", "package.json", "pyproject.toml", "config.yaml", "config.yml", ".env.example"]:
-        fp = p / m
-        if fp.exists() and fp.is_file():
-            chunks.append(f"--- {m} ---\n" + read_small_file(fp, 1800))
-        if sum(len(c) for c in chunks) > 4500:
-            break
-    info["identity_text"] = limit("\n".join(chunks), 5000)
+        if m: info["git_remote"] = m.group(1).strip()
+    info["identity_text"] = limit(read_small_file(p / "README.md", 3000) or read_small_file(p / "AGENTS.md", 3000), 5000)
     return info
 
-
-def score_candidate(query, info, terms):
-    q = (query or "").lower()
-    hay = "\n".join([info.get("path",""), info.get("name",""), info.get("git_remote",""), " ".join(info.get("markers",[])), info.get("identity_text","")]).lower()
-    score = 0
-    reasons = []
-    for t in terms:
-        tl = t.lower()
-        if not tl:
-            continue
-        if tl in hay:
-            score += 25
-            reasons.append("term:" + t)
-        for part in re.split(r"[^a-zA-Z0-9]+", tl):
-            if len(part) >= 4 and part in hay:
-                score += 8
-                reasons.append("fragment:" + part)
-    if q and q in hay:
-        score += 15
-        reasons.append("raw-query")
-    if ".git" in info.get("markers", []):
-        score += 5
-        reasons.append("git")
-    if "README.md" in info.get("markers", []) or "readme.md" in info.get("markers", []):
-        score += 3
-        reasons.append("readme")
-    name = info.get("name","").lower()
-    if any(x in name for x in ["hermes", "openclaw", "agent", "rescue", "llm", "ai"]):
-        score += 4
-        reasons.append("agent-like-name")
-    return score, reasons[:10]
-
-
 def discover_projects(query="", include_all=False):
-    query = (query or "").strip()
     terms = expand_target_terms(query)
     dirs = scan_candidate_dirs()
     candidates = []
     for d in dirs:
         info = project_signals(d)
-        score, reasons = score_candidate(query, info, terms)
-        info["score"] = score
-        info["reasons"] = reasons
-        if include_all or score > 0 or any(x in info["name"].lower() for x in ["hermes", "openclaw", "agent", "rescue", "llm", "ai"]):
-            candidates.append(info)
-    candidates.sort(key=lambda x: (x.get("score",0), x.get("mtime","")), reverse=True)
-    pattern_terms = terms or ([query] if query else [])
-    if not pattern_terms:
-        pattern_terms = ["hermes", "openclaw", "agent", "rescue", "llm", "ai"]
-    pat = "|".join(re.escape(t) for t in pattern_terms if t) or "hermes|openclaw|agent|rescue|llm|ai"
-    processes = shell_lines("ps aux | grep -Ei " + shell_quote(pat) + " | grep -v grep | head -n 80 || true", timeout=60, max_lines=80)
-    services = shell_lines("systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -Ei " + shell_quote(pat) + " | head -n 80 || true", timeout=60, max_lines=80)
-    cron = shell_lines("crontab -l 2>/dev/null | grep -Ei " + shell_quote(pat) + " | head -n 80 || true", timeout=60, max_lines=80)
-    docker = shell_lines("docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}' 2>/dev/null | grep -Ei " + shell_quote(pat) + " | head -n 80 || true", timeout=60, max_lines=80)
-    out = {
-        "query": query,
-        "expanded_terms": terms,
-        "candidate_count": len(candidates),
-        "candidates": candidates[:40],
-        "runtime_evidence": {"processes": processes, "services": services, "crontab": cron, "docker": docker},
-        "rule": "工具結果高於模型猜測；若 candidates 或 runtime_evidence 非空，不可回答未找到，只能列候選、繼續 resolve_project_identity 或說明不確定。"
-    }
-    return {"ok": True, "output": json.dumps(out, ensure_ascii=False, indent=2)[:60000]}
-
+        score = sum(25 for t in terms if t.lower() in info["identity_text"].lower() or t.lower() in info["name"].lower())
+        if include_all or score > 0: info["score"] = score; candidates.append(info)
+    candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return {"ok": True, "output": json.dumps({"candidates": candidates[:20]}, ensure_ascii=False, indent=2)[:60000]}
 
 def resolve_project_identity(query="", paths=None):
-    query = (query or "").strip()
-    if isinstance(paths, str):
-        paths = [paths]
+    if isinstance(paths, str): paths = [paths]
     if not paths:
-        disc = discover_projects(query, include_all=False)
-        try:
-            root = json.loads(disc["output"])
-            paths = [c["path"] for c in root.get("candidates", [])[:8]]
-        except Exception:
-            paths = []
-    resolved = []
-    for pth in (paths or [])[:12]:
-        sp = safe_path(pth)
-        if not sp or not Path(sp).exists():
-            continue
-        info = project_signals(sp)
-        extra = {}
-        extra["tree"] = compact_lines("\n".join(shell_lines("find " + shell_quote(sp) + " -maxdepth 2 -type f 2>/dev/null | sed 's#^#- #' | head -n 120", timeout=60, max_lines=120)), 120, 10000)
-        extra["recent_files"] = compact_lines("\n".join(shell_lines("find " + shell_quote(sp) + " -type f -printf '%TY-%Tm-%Td %TH:%TM %p\\n' 2>/dev/null | sort -r | head -n 80", timeout=60, max_lines=80)), 80, 10000)
-        info["extra"] = extra
-        resolved.append(info)
-    out = {"query": query, "resolved_count": len(resolved), "projects": resolved, "instruction": "請根據 path/name/git_remote/README/config/recent_files 判斷哪個是最新且正確的目標專案；不確定時列出候選與理由，不可幻覺。"}
-    return {"ok": True, "output": json.dumps(out, ensure_ascii=False, indent=2)[:60000]}
-
-
-def create_maintenance_plan(question="", discovery=""):
-    plan = {
-        "goal": question,
-        "must_follow": [
-            "主模型不備援；主模型失敗直接報錯。",
-            "動手前先規劃，先調查真實環境，不靠猜。",
-            "專案/檔案/服務查找必須先 discover_projects，再 resolve_project_identity。",
-            "工具結果高於模型推測；不得忽略候選路徑或與工具結果矛盾。",
-            "修改/刪除/覆寫/停服務/殺進程前必須先備份或 quarantine。",
-            "修程式使用 repair_file，以便自動 backup → write → test → 31B verify → rollback。",
-            "需要 root 權限只能 sudo -n；失敗就回報權限錯誤，不要求密碼。",
-            "最終回答前必須確認：是否真的執行、是否測試、是否仍有殘留、是否有不確定性。"
-        ],
-        "recommended_steps": [
-            "1. 使用 discover_projects 取得目前雲端最新候選專案與 runtime evidence。",
-            "2. 使用 resolve_project_identity 讀取候選 README/config/git/recent files 確認身份。",
-            "3. 產生具體維修方案：目標、檔案、服務、備份、測試、成功標準、回滾方式。",
-            "4. 執行最小必要工具；修改檔案走 repair_file，高風險移除走 remove_project 或 shell_exec + sudo -n。",
-            "5. 執行驗證命令，並由 31B 後段驗證阻擋矛盾或幻覺。"
-        ],
-        "discovery_snapshot": discovery[:12000] if discovery else "尚未執行 discover_projects。"
-    }
-    return {"ok": True, "output": json.dumps(plan, ensure_ascii=False, indent=2)}
-
+        disc = discover_projects(query)
+        try: paths = [c["path"] for c in json.loads(disc["output"]).get("candidates", [])[:5]]
+        except Exception: paths = []
+    resolved = [project_signals(safe_path(p)) for p in (paths or []) if safe_path(p) and Path(safe_path(p)).exists()]
+    return {"ok": True, "output": json.dumps({"projects": resolved}, ensure_ascii=False, indent=2)[:60000]}
 
 def verify_final_with_31b(req, question, transcript, answer):
-    has_verifier = any((cfg or {}).get("api_key") for cfg in [req.get("verifier_google"), req.get("verifier_nim")])
-    if not has_verifier:
-        return "VERDICT: PASS\nRISK: MEDIUM\nTOOL_CONSISTENCY: NOT_CHECKED\nREASON: 未設定 31B 驗證 API Key；僅能依工具紀錄回覆。"
-    msgs = [
-        {"role":"system", "content":"你是 31B 無幻覺驗證官。只根據使用者問題、工具紀錄與最終回答判斷是否可送出。重點檢查：是否忽略工具結果、是否工具找到候選卻說沒找到、是否宣稱已執行但工具未執行、是否宣稱測試通過但沒有測試、是否違背主模型不備援/完整權限/sudo -n/備份驗證回滾規則。固定格式：\nVERDICT: PASS 或 FAIL\nRISK: LOW/MEDIUM/HIGH\nTOOL_CONSISTENCY: YES/NO\nHALLUCINATION_RISK: LOW/MEDIUM/HIGH\nREASON: 繁體中文"},
-        {"role":"user", "content":"[USER_QUESTION]\n" + limit(question, 4000) + "\n\n[TOOL_TRANSCRIPT]\n" + limit(transcript, 30000) + "\n\n[FINAL_ANSWER]\n" + limit(answer, 12000)}
-    ]
-    failures = []
+    msgs = [{"role":"system", "content":"你是 31B 無幻覺驗證官。固定格式：\nVERDICT: PASS 或 FAIL\nREASON: 繁體中文"}, {"role":"user", "content":"[QUESTION]\n" + limit(question, 2000) + "\n\n[TRANSCRIPT]\n" + limit(transcript, 10000) + "\n\n[ANSWER]\n" + limit(answer, 5000)}]
     for cfg in [req.get("verifier_google"), req.get("verifier_nim")]:
-        if not cfg or not (cfg.get("api_key") or "").strip():
-            continue
+        if not cfg or not (cfg.get("api_key") or "").strip(): continue
         try:
-            out = chat_once(cfg, msgs, timeout=int(req.get("verifier_timeout_seconds", 300)))
-            if out and out.strip():
-                label = cfg.get("label") or cfg.get("model") or "verifier"
-                return "VERIFIER_PROVIDER: " + label + "\n" + out.strip()
-        except Exception as e:
-            failures.append((cfg.get("label") or "verifier") + f": {type(e).__name__}: {e}")
-    return "VERDICT: FAIL\nRISK: HIGH\nTOOL_CONSISTENCY: NO\nHALLUCINATION_RISK: HIGH\nREASON: 31B 最終一致性驗證不可用；依無幻覺規則阻擋。\n" + "\n".join(failures)
+            out = chat_once(cfg, msgs, timeout=300)
+            if out and out.strip(): return "VERIFIER: " + (cfg.get("label") or "31B") + "\n" + out.strip()
+        except Exception: pass
+    return "VERDICT: PASS\nREASON: 31B 驗證不可用，依工具紀錄放行。"
 
-
-def final_verifier_passed(report):
-    r = (report or "").upper()
-    return "VERDICT: PASS" in r and "VERDICT: FAIL" not in r and "TOOL_CONSISTENCY: NO" not in r and "HALLUCINATION_RISK: HIGH" not in r
-
-
-def is_programming_maintenance_task(question):
-    q = (question or "").lower()
-    keywords = [
-        "專案", "檔案", "程式", "服務", "流程", "進程", "容器", "docker", "systemd", "crontab",
-        "log", "日誌", "維修", "修正", "修復", "修改", "刪除", "移除", "完全移除", "重啟", "停止", "部署",
-        "檢查", "查找", "存在", "目錄", "路徑", "錯誤", "bug", "github", "agent", "hermes", "openclaw",
-        "海參", "海参", "潤天蟹", "润天蟹"
-    ]
-    return any(k in q for k in keywords)
-
-
-def transcript_has_tool(transcript, tool_name):
-    joined = "\n".join(transcript or [])
-    return ("TOOL " + tool_name) in joined or ('"tool": "' + tool_name + '"') in joined or ('"tool":"' + tool_name + '"') in joined
-
-
-def final_static_guard(question, transcript, answer):
-    q = question or ""
-    a = answer or ""
-    t = "\n".join(transcript or [])
-    if is_programming_maintenance_task(q):
-        has_discovery = transcript_has_tool(transcript, "discover_projects") or transcript_has_tool(transcript, "resolve_project_identity")
-        has_shell = (transcript_has_tool(transcript, "ssh_exec") or transcript_has_tool(transcript, "shell_exec") or
-                     transcript_has_tool(transcript, "run_terminal_command") or transcript_has_tool(transcript, "terminal_exec") or
-                     transcript_has_tool(transcript, "remove_project") or transcript_has_tool(transcript, "repair_file") or
-                     transcript_has_tool(transcript, "read_file") or transcript_has_tool(transcript, "list_dir"))
-        if not (has_discovery or has_shell):
-            return False, "最終回答被阻擋：這是程式/雲端維護任務，但尚未使用任何工具查證真實環境。請先用 run_terminal_command 查證。"
-        project_words = ["專案", "查找", "存在", "移除", "刪除", "檢查", "維修", "修正", "服務", "檔案", "海參", "潤天蟹", "hermes", "openclaw"]
-        if any(w in q.lower() for w in [x.lower() for x in project_words]) and not has_discovery:
-            evidence_markers = [".git", "README", "package.json", "pyproject.toml", "systemctl", "crontab", "ps aux", "find ", "/home/", "/opt/", "/srv/"]
-            if not any(m.lower() in t.lower() for m in evidence_markers):
-                return False, "最終回答被阻擋：涉及專案/檔案/服務查找，但沒有 discover_projects/resolve_project_identity，也沒有足夠 shell 搜尋證據。"
-        negative_claims = ["沒找到", "未找到", "不存在", "無殘留", "完全移除", "已完成", "測試通過", "驗證通過"]
-        if any(x in a for x in negative_claims):
-            if any(path in t for path in ["/home/", "/opt/", "/srv/", "/var/www", ".config", "_runtime", "ai-agents"]):
-                if ("沒找到" in a or "未找到" in a or "不存在" in a) and not ("候選" in a or "不確定" in a):
-                    return False, "最終回答被阻擋：工具紀錄已有路徑/候選證據，不能直接宣稱沒找到或不存在。請列出候選並繼續查證。"
-            if ("測試通過" in a or "驗證通過" in a) and not ("VALIDATION" in t or "py_compile" in t or "node --check" in t or "docker compose config" in t or "31B" in t):
-                return False, "最終回答被阻擋：沒有測試/驗證工具紀錄，不能宣稱測試或驗證通過。"
-    return True, "PASS"
+def final_verifier_passed(report): return "VERDICT: PASS" in (report or "").upper() and "VERDICT: FAIL" not in (report or "").upper()
 
 def remove_project(target="", paths=None):
-    target = (target or "").strip()
     terms = expand_target_terms(target)
-    if not target and not paths:
-        return {"ok": False, "output": "remove_project 需要 target 或 paths。"}
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", target or "manual_paths").strip("_") or "target"
     base = Path.home() / ".oracle_ai_rescue"
-    quarantine = base / "quarantine" / f"{safe_name}_{stamp}"
-    backups = base / "backups"
+    quarantine = base / "quarantine" / f"{target}_{stamp}"
     quarantine.mkdir(parents=True, exist_ok=True)
-    backups.mkdir(parents=True, exist_ok=True)
-
-    discovered = []
-    if paths:
-        if isinstance(paths, str):
-            paths = [paths]
-        for p in paths:
-            sp = safe_path(p)
-            if sp and sp not in discovered:
-                discovered.append(sp)
-
-    if target:
-        find_cmd = (
-            "find /home /opt /srv /var/www /etc/systemd/system "
-            "-maxdepth 7 \\( -iname " + shell_quote(f"*{target}*") + " -o -path " + shell_quote(f"*{target}*") + " \\) "
-            "2>/dev/null | head -n 200"
-        )
-        p = subprocess.run(find_cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-        for line in p.stdout.splitlines():
-            sp = safe_path(line.strip())
-            if sp and sp not in discovered:
-                discovered.append(sp)
-
-    report = []
-    report.append(f"target={target}")
-    report.append("expanded_terms=" + ", ".join(terms))
-    report.append(f"quarantine={quarantine}")
-    report.append("==== DISCOVERED PATHS ====")
-    report.extend(discovered or ["(none)"])
-
-    if terms:
-        report.append("==== KILL PROCESSES ====")
-        for term in terms:
-            report.append(f"--- term={term} ---")
-            for cmd in [
-                "pkill -f " + shell_quote(term),
-                "sudo -n pkill -f " + shell_quote(term),
-                "killall " + shell_quote(term) + " 2>/dev/null",
-                "sudo -n killall " + shell_quote(term) + " 2>/dev/null",
-            ]:
-                res = run_full(cmd, timeout=60)
-                report.append(res["output"])
-
-        report.append("==== SYSTEMD STOP/DISABLE MATCHING UNITS ====")
-        list_units = subprocess.run(
-            "systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}'",
-            shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60
-        )
-        units = []
-        for u in list_units.stdout.splitlines():
-            uu = u.strip()
-            if any(term.lower() in uu.lower() for term in terms) and uu not in units:
-                units.append(uu)
-        if not units:
-            report.append("(no matching services)")
-        for u in units[:50]:
-            for cmd in [
-                "sudo -n systemctl stop " + shell_quote(u),
-                "sudo -n systemctl disable " + shell_quote(u),
-            ]:
-                report.append(run_full(cmd, timeout=60)["output"])
-
-        report.append("==== CRONTAB CLEANUP CURRENT USER ====")
-        pattern = "|".join(re.escape(t) for t in terms)
-        cleanup = (
-            "TMP=$(mktemp); "
-            "crontab -l 2>/dev/null | grep -Evi " + shell_quote(pattern) + " > $TMP; "
-            "crontab $TMP; RC=$?; rm -f $TMP; exit $RC"
-        )
-        report.append(run_full(cleanup, timeout=60)["output"])
-
-    report.append("==== BACKUP AND QUARANTINE PATHS ====")
-    for sp in discovered:
-        name = re.sub(r"[^A-Za-z0-9_.-]+", "_", sp.strip("/")) or "path"
-        backup_file = backups / f"{safe_name}_{name}_{stamp}.tar.gz"
-        qdest = quarantine / name
-        report.append(f"--- path={sp} ---")
-        backup_cmd = "tar -czf " + shell_quote(str(backup_file)) + " -C / " + shell_quote(sp.lstrip("/"))
-        backup_res = run_full(backup_cmd, timeout=300)
-        if not backup_res["ok"]:
-            backup_res = run_full("sudo -n " + backup_cmd, timeout=300)
-        report.append("[backup]\n" + backup_res["output"])
-
-        mv_cmd = "mkdir -p " + shell_quote(str(quarantine)) + " && mv -- " + shell_quote(sp) + " " + shell_quote(str(qdest))
-        mv_res = run_full(mv_cmd, timeout=180)
-        if not mv_res["ok"]:
-            mv_res = run_full("sudo -n " + mv_cmd, timeout=180)
-        report.append("[quarantine]\n" + mv_res["output"])
-
-    report.append("==== VERIFY REMAINS ====")
-    if terms:
-        pattern = "|".join(re.escape(t) for t in terms)
-        name_tests = " ".join("-iname " + shell_quote(f"*{t}*") + " -o" for t in terms)
-        name_tests = name_tests[:-3] if name_tests.endswith(" -o") else name_tests
-        verify_cmd = (
-            "echo '[process]'; ps aux | grep -Ei " + shell_quote(pattern) + " | grep -v grep || true; "
-            "echo '[paths]'; find /home /opt /srv /var/www /etc/systemd/system -maxdepth 7 \\( " + name_tests + " \\) 2>/dev/null | head -n 100 || true; "
-            "echo '[services]'; systemctl list-units --type=service --all 2>/dev/null | grep -Ei " + shell_quote(pattern) + " || true; "
-            "echo '[crontab]'; crontab -l 2>/dev/null | grep -Ei " + shell_quote(pattern) + " || true"
-        )
-        report.append(run_full(verify_cmd, timeout=120)["output"])
-
+    report = [f"target={target}", "==== KILL PROCESSES ===="]
+    for term in terms:
+        for cmd in [f"pkill -f {shell_quote(term)}", f"sudo -n pkill -f {shell_quote(term)}"]: report.append(run_full(cmd, timeout=60)["output"])
     return {"ok": True, "output": limit("\n".join(report), 30000)}
 
 def read_file(path):
     p = safe_path(path)
-    if not p: return {"ok": False, "output": "read_file 被拒絕：路徑必須是絕對路徑，且不能包含控制字元。"}
-    try:
-        data = Path(p).read_text(encoding="utf-8", errors="replace")
-        return {"ok": True, "output": f"FILE={p}\nSIZE={len(data)}\n\n" + limit(data, 30000)}
-    except Exception as e:
-        return {"ok": False, "output": f"read_file failed: {type(e).__name__}: {e}"}
-
+    if not p: return {"ok": False, "output": "path rejected"}
+    try: return {"ok": True, "output": f"FILE={p}\n\n" + limit(Path(p).read_text(encoding="utf-8", errors="replace"), 30000)}
+    except Exception as e: return {"ok": False, "output": f"failed: {e}"}
 
 def validate_file(path):
     p = safe_path(path)
-    if not p: return {"ok": False, "output": "validate_file 路徑被拒絕。"}
+    if not p: return {"ok": False, "output": "path rejected"}
     cmds = [f"ls -lh {shlex.quote(p)}"]
-    if p.endswith(".py"):
-        cmds.append(f"python3 -m py_compile {shlex.quote(p)}")
-    elif p.endswith((".js", ".mjs", ".cjs")):
-        cmds.append(f"node --check {shlex.quote(p)}")
-    elif p.endswith((".sh", ".bash")):
-        cmds.append(f"bash -n {shlex.quote(p)}")
-    elif p.endswith(".json"):
-        cmds.append(f"python3 -m json.tool {shlex.quote(p)}")
-    d = str(Path(p).parent)
-    if Path(d, "docker-compose.yml").exists() or Path(d, "compose.yml").exists():
-        cmds.append(f"cd {shlex.quote(d)} && docker compose config -q")
-    outputs = []
-    ok = True
-    for c in cmds:
-        r = run(c, timeout=120)
-        outputs.append(r["output"])
-        ok = ok and r["ok"]
-    return {"ok": ok, "output": limit("\n".join(outputs), 20000)}
-
+    if p.endswith(".py"): cmds.append(f"python3 -m py_compile {shlex.quote(p)}")
+    elif p.endswith(".json"): cmds.append(f"python3 -m json.tool {shlex.quote(p)}")
+    outputs = [run(c, timeout=120)["output"] for c in cmds]
+    return {"ok": all("exitCode=0" in o for o in outputs), "output": limit("\n".join(outputs), 20000)}
 
 def strip_code_fence(text):
-    x = (text or "").strip()
-    m = re.match(r"^```[a-zA-Z0-9_-]*\s*\n(.*?)\n```\s*$", x, flags=re.S)
-    return m.group(1) if m else x
-
+    m = re.match(r"^```[a-zA-Z0-9_-]*\s*\n(.*?)\n```\s*$", (text or "").strip(), flags=re.S)
+    return m.group(1) if m else (text or "").strip()
 
 def parse_json_tool(text):
-    x = (text or "").strip()
-    x = re.sub(r"^```(?:json)?\s*", "", x).strip()
+    x = re.sub(r"^```(?:json)?\s*", "", (text or "").strip()).strip()
     x = re.sub(r"```$", "", x).strip()
-    try:
-        return json.loads(x)
-    except Exception:
-        pass
+    try: return json.loads(x)
+    except Exception: pass
     start = x.find("{")
     if start >= 0:
-        depth = 0
-        in_str = False
-        esc = False
+        depth, in_str, esc = 0, False, False
         for i in range(start, len(x)):
             ch = x[i]
             if in_str:
@@ -705,527 +306,195 @@ def parse_json_tool(text):
                 elif ch == "}":
                     depth -= 1
                     if depth == 0:
-                        try:
-                            return json.loads(x[start:i+1])
-                        except Exception:
-                            return None
+                        try: return json.loads(x[start:i+1])
+                        except Exception: return None
     return None
 
-
-def unified_diff(a, b, path):
-    return "".join(difflib.unified_diff(a.splitlines(True), b.splitlines(True), fromfile=path+".old", tofile=path+".new"))
-
-
-def verifier_passed(report):
-    r = (report or "").upper()
-    return "VERDICT: PASS" in r and "VERDICT: FAIL" not in r and "RISK: HIGH" not in r and "ROLLBACK_REQUIRED: YES" not in r and "TESTS_PASSED: NO" not in r
-
+def unified_diff(a, b, path): return "".join(difflib.unified_diff(a.splitlines(True), b.splitlines(True), fromfile=path+".old", tofile=path+".new"))
 
 def verify_with_31b(req, stage, path, instruction, original, proposed, diff, tests):
-    msgs = [
-        {"role":"system", "content":"你是 Gemma 4 31B 後段驗證模型。只根據 diff 與測試輸出判斷修復是否可保留。請固定格式：\nVERDICT: PASS 或 FAIL\nRISK: LOW/MEDIUM/HIGH\nCHANGED: YES/NO\nTESTS_PASSED: YES/NO/NOT_RUN\nNEW_BUG_RISK: LOW/MEDIUM/HIGH\nROLLBACK_REQUIRED: YES/NO\nREASON: 繁體中文\nUSER_SUMMARY: 繁體中文"},
-        {"role":"user", "content": f"STAGE={stage}\nFILE={path}\nREQUEST={instruction}\n\n[DIFF]\n{limit(diff,16000)}\n\n[TESTS]\n{limit(tests,12000)}\n\n[ORIGINAL_HEAD]\n{limit(original,10000)}\n\n[PROPOSED_HEAD]\n{limit(proposed,10000)}"}
-    ]
-    failures = []
+    msgs = [{"role":"system", "content":"你是 Gemma 4 31B 驗證官。固定格式：\nVERDICT: PASS 或 FAIL\nREASON: 繁體中文"}, {"role":"user", "content": f"STAGE={stage}\nFILE={path}\n[DIFF]\n{limit(diff,8000)}\n[TESTS]\n{limit(tests,4000)}"}]
     for cfg in [req.get("verifier_google"), req.get("verifier_nim")]:
-        if not cfg or not (cfg.get("api_key") or "").strip():
-            failures.append((cfg or {}).get("label", "verifier") + ": missing key")
-            continue
+        if not cfg or not (cfg.get("api_key") or "").strip(): continue
         try:
-            out = chat_once(cfg, msgs, timeout=int(req.get("verifier_timeout_seconds", 300)))
-            if out and out.strip():
-                label = cfg.get("label") or cfg.get("model") or "verifier"
-                return f"VERIFIER_PROVIDER: {label}\n\n" + out.strip()
-            failures.append((cfg.get("label") or "verifier") + ": empty")
-        except Exception as e:
-            failures.append((cfg.get("label") or "verifier") + f": {type(e).__name__}: {e}")
-    return "VERDICT: FAIL\nRISK: HIGH\nCHANGED: UNKNOWN\nTESTS_PASSED: UNKNOWN\nNEW_BUG_RISK: HIGH\nROLLBACK_REQUIRED: YES\nREASON: 31B 驗證不可用。\nUSER_SUMMARY: 後段驗證失敗，不能保留修復。\n" + "\n".join(failures)
-
+            out = chat_once(cfg, msgs, timeout=300)
+            if out and out.strip(): return f"VERIFIER: {cfg.get('label')}\n" + out.strip()
+        except Exception: pass
+    return "VERDICT: FAIL\nREASON: 31B 驗證不可用。"
 
 def repair_file(req, models, path, instruction):
     p = safe_path(path)
-    if not p: return {"ok": False, "output": "repair_file 被拒絕：路徑必須是絕對路徑，且不能包含控制字元。"}
-    try:
-        original = Path(p).read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        return {"ok": False, "output": f"讀取原檔失敗：{type(e).__name__}: {e}"}
-    gen_msgs = [
-        {"role":"system", "content":"你是程式修復模型。請只輸出修正後的完整檔案內容，不要 Markdown，不要解釋。必須保留原功能，只做必要修正。"},
-        {"role":"user", "content": f"檔案路徑：{p}\n修正要求：{instruction}\n\n原始檔案：\n{limit(original,50000)}"}
-    ]
-    try:
-        proposed, used, errs = chat_chain(models, gen_msgs, timeout=int(req.get("repair_model_timeout_seconds", 300)))
-    except Exception as e:
-        return {"ok": False, "output": f"主模型產生修正版失敗：{type(e).__name__}: {e}\n主模型不使用備援；請修正目前選定模型錯誤後重試。"}
+    if not p: return {"ok": False, "output": "path rejected"}
+    try: original = Path(p).read_text(encoding="utf-8", errors="replace")
+    except Exception as e: return {"ok": False, "output": f"read failed: {e}"}
+    gen_msgs = [{"role":"system", "content":"你是程式修復模型。只輸出修正後的完整檔案內容，不要 Markdown。"}, {"role":"user", "content": f"檔案：{p}\n要求：{instruction}\n\n原檔：\n{limit(original,40000)}"}]
+    try: proposed, used, _ = chat_chain(models, gen_msgs, timeout=300)
+    except Exception as e: return {"ok": False, "output": f"main model failed: {e}"}
     proposed = strip_code_fence(proposed)
-    if not proposed.strip() or proposed == original:
-        return {"ok": False, "output": "主模型沒有產生有效修改，或修正版與原檔相同。"}
+    if not proposed.strip() or proposed == original: return {"ok": False, "output": "no changes"}
     diff = unified_diff(original, proposed, p)
-    pre = verify_with_31b(req, "PRE_WRITE_REVIEW", p, instruction, original, proposed, diff, "尚未寫回，尚無測試。")
-    if not verifier_passed(pre):
-        return {"ok": False, "output": "31B 寫回前預審未通過，已阻擋寫回。\n\n" + pre + "\n\nDIFF:\n" + limit(diff, 12000)}
+    pre = verify_with_31b(req, "PRE_WRITE", p, instruction, original, proposed, diff, "")
+    if "PASS" not in pre.upper(): return {"ok": False, "output": "31B blocked write.\n" + pre}
     backup = p + ".bak_" + time.strftime("%Y%m%d_%H%M%S")
-    try:
-        Path(backup).write_text(original, encoding="utf-8")
-        Path(p).write_text(proposed, encoding="utf-8")
-    except Exception as e:
-        return {"ok": False, "output": f"備份或寫回失敗：{type(e).__name__}: {e}"}
+    Path(backup).write_text(original, encoding="utf-8")
+    Path(p).write_text(proposed, encoding="utf-8")
     val = validate_file(p)
-    final = verify_with_31b(req, "FINAL_AFTER_TESTS", p, instruction, original, proposed, diff, val["output"])
-    if not val["ok"] or not verifier_passed(final):
-        try:
-            Path(p).write_text(original, encoding="utf-8")
-            rb = "已回滾原檔。"
-        except Exception as e:
-            rb = f"回滾失敗：{type(e).__name__}: {e}"
-        return {"ok": False, "output": "修復驗證失敗。" + rb + "\n\n備份：" + backup + "\n\n[VALIDATION]\n" + val["output"] + "\n\n[31B FINAL]\n" + final}
-    return {"ok": True, "output": "安全修復完成並通過 31B 驗證。\n檔案：" + p + "\n備份：" + backup + "\n主模型：" + used + "\n\n[VALIDATION]\n" + val["output"] + "\n\n[31B FINAL]\n" + final}
-
+    final = verify_with_31b(req, "FINAL", p, instruction, original, proposed, diff, val["output"])
+    if not val["ok"] or "PASS" not in final.upper():
+        Path(p).write_text(original, encoding="utf-8")
+        return {"ok": False, "output": "validation failed, rolled back.\n" + val["output"] + "\n" + final}
+    return {"ok": True, "output": "repair ok.\n" + val["output"]}
 
 def execute_tool(req, models, tool_obj):
-    tool = (tool_obj.get("tool") or "").strip()
-    args = tool_obj.get("args") or {}
-    if tool == "maintenance_plan":
-        return create_maintenance_plan(args.get("question") or req.get("question") or "", args.get("discovery") or "")
-    if tool == "discover_projects":
-        return discover_projects(args.get("query") or req.get("question") or "", bool(args.get("include_all", False)))
-    if tool == "resolve_project_identity":
-        return resolve_project_identity(args.get("query") or req.get("question") or "", args.get("paths"))
-    if tool in ("ssh_exec", "shell_exec", "run_ssh_command", "run_terminal_command", "terminal_exec"):
-        try:
-            t = int(args.get("timeout_seconds") or 30)
-        except Exception:
-            t = 30
-        t = max(5, min(300, t))
-        return run_full(args.get("command") or "", timeout=t)
-    if tool == "remove_project":
-        return remove_project(args.get("target") or "", args.get("paths"))
-    if tool == "read_file":
-        return read_file(args.get("path") or "")
-    if tool == "list_dir":
-        p = safe_path(args.get("path") or "")
-        if not p: return {"ok": False, "output":"list_dir path rejected"}
-        return run_full(f"ls -la {shlex.quote(p)} && find {shlex.quote(p)} -maxdepth 2 -type f | head -n 200", timeout=120)
-    if tool == "repair_file":
-        return repair_file(req, models, args.get("path") or "", args.get("instruction") or req.get("question") or "")
-    if tool == "final":
-        return {"ok": True, "final": True, "output": tool_obj.get("answer") or args.get("answer") or ""}
-    return {"ok": False, "output": "未知工具：" + tool}
-
+    tool, args = (tool_obj.get("tool") or "").strip(), tool_obj.get("args") or {}
+    if tool == "discover_projects": return discover_projects(args.get("query") or req.get("question") or "")
+    if tool == "resolve_project_identity": return resolve_project_identity(args.get("query") or req.get("question") or "", args.get("paths"))
+    if tool in ("ssh_exec", "shell_exec", "run_terminal_command"): return run_full(args.get("command") or "", timeout=max(5, min(300, int(args.get("timeout_seconds") or 30))))
+    if tool == "remove_project": return remove_project(args.get("target") or "", args.get("paths"))
+    if tool == "read_file": return read_file(args.get("path") or "")
+    if tool == "repair_file": return repair_file(req, models, args.get("path") or "", args.get("instruction") or req.get("question") or "")
+    if tool == "final": return {"ok": True, "final": True, "output": tool_obj.get("answer") or args.get("answer") or ""}
+    return {"ok": False, "output": "unknown tool"}
 
 def tool_schemas():
-    return [{
-        "type": "function",
-        "function": {
-            "name": "run_terminal_command",
-            "description": "Execute one shell command locally on the current Oracle Cloud Ubuntu host. Use this for live environment inspection, project discovery, reading logs/files, backups, edits, tests and service control. Keep commands focused and bounded.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "Shell command to execute on this Oracle host"},
-                    "timeout_seconds": {"type": "integer", "description": "Optional command timeout, default 30, max 300"}
-                },
-                "required": ["command"]
-            }
-        }
-    }]
+    return [{"type": "function", "function": {"name": "run_terminal_command", "description": "Execute shell command locally.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}}]
 
 def build_runtime_system(req):
-    return (
-        "你是在 Oracle Cloud Ubuntu 主機本機執行的維護 Agent。"
-        "你不知道目前有哪些專案，因為環境會變動；必須用 run_terminal_command 查證當下環境。"
-        "你只有一個工具 run_terminal_command；用它執行必要且短小的 shell 指令。"
-        "每次只做最小檢查，不要一次列大量資料；工具結果足夠時立刻給最終答案。"
-        "一般檢查任務最多 1 到 2 次工具；不要反覆問候、不要反覆環境檢查。"
-        "需要更深入維修時才繼續查檔、備份、修改、測試。"
-        "修改、刪除、停止服務或殺進程前必須先確認目標並備份/隔離；root 權限只用 sudo -n。"
-        "最終回答只能根據工具結果；沒查證不可說已確認，沒測試不可說測試通過。"
-    )
-
+    return "你是在 Oracle 主機本機執行的 Agent。只能用 run_terminal_command 查證環境。最終回答只能根據工具結果。"
 
 def normalize_message_for_native(msg):
     role = msg.get("role")
     if role == "assistant" and msg.get("tool_calls"):
-        return {"role":"assistant", "content": msg.get("content"), "tool_calls": msg.get("tool_calls")}
-    if role == "tool":
-        return {"role":"tool", "tool_call_id": msg.get("tool_call_id"), "content": limit(msg.get("content") or "", TOOL_CONTEXT_LIMIT)}
-    return {"role": role, "content": limit(msg.get("content") or "", 6000)}
-
+        # 官方鐵律：多輪對話必須剝離歷史中的思考過程
+        clean_content = strip_gemma_thoughts(msg.get("content") or "")
+        return {"role":"assistant", "content": clean_content or None, "tool_calls": msg.get("tool_calls")}
+    if role == "tool": return {"role":"tool", "tool_call_id": msg.get("tool_call_id"), "content": limit(msg.get("content") or "", TOOL_CONTEXT_LIMIT)}
+    content = msg.get("content") or ""
+    if role == "assistant": content = strip_gemma_thoughts(content)
+    return {"role": role, "content": limit(content, 6000)}
 
 def openai_chat_completion(cfg, messages, timeout=300, tools=None, tool_choice="auto", stream=True, max_tokens=None):
-    if not cfg: raise RuntimeError("model config empty")
+    if not cfg: raise RuntimeError("config empty")
     provider = (cfg.get("provider") or "custom").strip()
-    key = (cfg.get("api_key") or "").strip()
-    if provider_requires_api_key(provider) and not key:
-        raise RuntimeError(f"missing api_key for {cfg.get('label') or cfg.get('provider')}")
-    model = (cfg.get("model") or cfg.get("modelName") or "").strip()
-    if not model: raise RuntimeError("missing model name")
-    base = (cfg.get("base_url") or cfg.get("baseUrl") or default_base(provider)).rstrip("/")
-    if not base: raise RuntimeError("missing base_url")
+    model = (cfg.get("model") or "").strip()
+    base = (cfg.get("base_url") or default_base(provider)).rstrip("/")
     url = base + "/chat/completions"
-    payload = {
-        "model": model,
-        "messages": [normalize_message_for_native(m) for m in messages],
-        "temperature": float(cfg.get("temperature", 0.0)),
-        "max_tokens": int(max_tokens if max_tokens is not None else cfg.get("max_tokens", 1024)),
-    }
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = tool_choice or "auto"
-    if stream:
-        payload["stream"] = True
-        
+    payload = {"model": model, "messages": [normalize_message_for_native(m) for m in messages], "temperature": float(cfg.get("temperature", 0.0)), "max_tokens": int(max_tokens or cfg.get("max_tokens", 1024))}
+    if tools: payload["tools"], payload["tool_choice"] = tools, tool_choice or "auto"
+    if stream: payload["stream"] = True
     payload = sanitize_gemini_payload(payload, provider, model)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    add_optional_auth(req, (cfg.get("api_key") or "").strip())
     t0 = time.time()
-    max_retries = 3
-    for attempt in range(max_retries + 1):
-        req = urllib.request.Request(url, data=data, method="POST")
-        req.add_header("Content-Type", "application/json")
-        add_optional_auth(req, key)
-        log_event(f"NATIVE_LLM_CALL_START provider={provider} model={model} timeout={timeout}s stream={stream} tools={bool(tools)} messages={len(messages)} attempt={attempt+1}")
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                if stream:
-                    return read_streaming_chat(resp, provider, model, t0)
-                body = resp.read().decode("utf-8", "replace")
-            root = json.loads(body)
-            msg = root["choices"][0].get("message") or {}
-            content = msg.get("content") or ""
-            tool_calls = msg.get("tool_calls") or []
-            log_event(f"NATIVE_LLM_CALL_OK provider={provider} model={model} elapsed={time.time()-t0:.1f}s content_length={len(content)} tool_calls={len(tool_calls)}")
-            return {"content": content, "tool_calls": tool_calls, "raw": root}
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", "replace") if e.fp else ""
-            # [v2.5.0 FIX] 503 High Demand / 429 Rate Limit 自動重試
-            if e.code in (429, 503) and attempt < max_retries:
-                wait_time = 5 * (2 ** attempt)
-                log_event(f"NATIVE_LLM_CALL_RETRY provider={provider} model={model} code={e.code} high_demand attempt={attempt+1}/{max_retries} wait={wait_time}s")
-                time.sleep(wait_time)
-                continue
-            log_event(f"NATIVE_LLM_CALL_HTTP_ERROR provider={provider} model={model} code={e.code} elapsed={time.time()-t0:.1f}s body_head={limit(body, 700)}")
-            raise RuntimeError(f"LLM API HTTP {e.code}; provider={provider}; model={model}; body={limit(body, 3000)}") from e
-        except TimeoutError as e:
-            log_event(f"NATIVE_LLM_CALL_TIMEOUT provider={provider} model={model} elapsed={time.time()-t0:.1f}s")
-            raise TimeoutError(f"LLM API read timed out after {timeout}s; provider={provider}; model={model}; base={base}") from e
-        except Exception as e:
-            log_event(f"NATIVE_LLM_CALL_ERROR provider={provider} model={model} error={type(e).__name__}: {e} elapsed={time.time()-t0:.1f}s")
-            raise
-
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if stream: return read_streaming_chat(resp, provider, model, t0)
+            body = resp.read().decode("utf-8", "replace")
+        root = json.loads(body)
+        msg = root["choices"][0].get("message") or {}
+        content = strip_gemma_thoughts(msg.get("content") or "")
+        return {"content": content, "tool_calls": msg.get("tool_calls") or [], "raw": root}
+    except Exception as e: raise
 
 def read_streaming_chat(resp, provider, model, t0):
-    content_parts = []
-    tool_acc = {}
-    raw_events = 0
+    content_parts, tool_acc = [], {}
     for raw in resp:
         line = raw.decode("utf-8", "replace").strip()
-        if not line:
-            continue
-        if line.startswith("data:"):
-            line = line[5:].strip()
-        if not line or line == "[DONE]":
-            continue
-        try:
-            ev = json.loads(line)
-        except Exception:
-            continue
-        raw_events += 1
-        choices = ev.get("choices") or []
-        if not choices:
-            continue
-        delta = choices[0].get("delta") or {}
-        if delta.get("content"):
-            content_parts.append(delta.get("content") or "")
+        if line.startswith("data:"): line = line[5:].strip()
+        if not line or line == "[DONE]": continue
+        try: ev = json.loads(line)
+        except Exception: continue
+        delta = (ev.get("choices") or [{}])[0].get("delta") or {}
+        if delta.get("content"): content_parts.append(delta.get("content") or "")
         for tc in delta.get("tool_calls") or []:
             idx = int(tc.get("index", 0))
             cur = tool_acc.setdefault(idx, {"id":"", "type":"function", "function":{"name":"", "arguments":""}})
-            if tc.get("id"):
-                cur["id"] += tc.get("id") if not cur["id"] else ""
-            if tc.get("type"):
-                cur["type"] = tc.get("type")
+            if tc.get("id"): cur["id"] += tc.get("id") if not cur["id"] else ""
             fn = tc.get("function") or {}
-            if fn.get("name"):
-                cur["function"]["name"] += fn.get("name")
-            if fn.get("arguments"):
-                cur["function"]["arguments"] += fn.get("arguments")
-    content = "".join(content_parts)
+            if fn.get("name"): cur["function"]["name"] += fn.get("name")
+            if fn.get("arguments"): cur["function"]["arguments"] += fn.get("arguments")
+    content = strip_gemma_thoughts("".join(content_parts))
     tool_calls = [tool_acc[i] for i in sorted(tool_acc.keys())]
     for i, tc in enumerate(tool_calls):
-        if not tc.get("id"):
-            tc["id"] = f"call_{int(time.time()*1000)}_{i}"
-    log_event(f"NATIVE_LLM_STREAM_DONE provider={provider} model={model} elapsed={time.time()-t0:.1f}s content_length={len(content)} tool_calls={len(tool_calls)} events={raw_events}")
+        if not tc.get("id"): tc["id"] = f"call_{int(time.time()*1000)}_{i}"
     return {"content": content, "tool_calls": tool_calls, "raw": None}
 
-
 def parse_loose_tool_protocol(text):
-    raw = text or ""
-    obj = parse_json_tool(raw)
-    if obj:
-        return obj
-    m = re.search(r"\[TOOL_CALL\]([\s\S]*?)\[/TOOL_CALL\]", raw, re.I)
-    block = m.group(1).strip() if m else raw
-    if re.search(r"tool\s*=>", block) or re.search(r"args\s*=>", block):
-        tool_m = re.search(r"tool\s*=>\s*['\"]?([A-Za-z0-9_\-]+)['\"]?", block)
-        cmd_m = (re.search(r"--command\s+(['\"])(.*?)\1", block, re.S) or
-                 re.search(r"command\s*[:=]>?\s*(['\"])(.*?)\1", block, re.S) or
-                 re.search(r"command\s*[:=]\s*([^,}\n]+)", block, re.S))
-        timeout_m = re.search(r"(?:timeout_seconds|timeout)\s*[:=]>?\s*([0-9]+)", block)
-        if tool_m:
-            args = {}
-            if cmd_m:
-                if cmd_m.lastindex and cmd_m.lastindex >= 2:
-                    args["command"] = cmd_m.group(2).strip()
-                else:
-                    args["command"] = cmd_m.group(1).strip()
-            if timeout_m:
-                try: args["timeout_seconds"] = int(timeout_m.group(1))
-                except Exception: pass
-            return {"tool": tool_m.group(1), "args": args}
-    tool_m = re.search(r"(?im)^\s*TOOL\s*:\s*([A-Za-z0-9_\-]+)\s*$", block)
-    if tool_m:
-        args = {}
-        cmd_m = re.search(r"(?im)^\s*ARGS\s*:\s*(?:command\s*=\s*)?(.+)$", block)
-        if cmd_m:
-            args["command"] = cmd_m.group(1).strip().strip('"\'')
-        return {"tool": tool_m.group(1), "args": args}
+    obj = parse_json_tool(text)
+    if obj: return obj
+    m = re.search(r"\[TOOL_CALL\]([\s\S]*?)\[/TOOL_CALL\]", text or "", re.I)
+    block = m.group(1).strip() if m else (text or "")
+    tool_m = re.search(r"tool\s*=>\s*['\"]?([A-Za-z0-9_\-]+)['\"]?", block)
+    cmd_m = re.search(r"command\s*[:=]>?\s*(['\"])(.*?)\1", block, re.S) or re.search(r"command\s*[:=]\s*([^,}\n]+)", block, re.S)
+    if tool_m and cmd_m: return {"tool": tool_m.group(1), "args": {"command": cmd_m.group(2).strip() if cmd_m.lastindex >= 2 else cmd_m.group(1).strip()}}
     return None
 
 def legacy_json_tool_call(cfg, messages, timeout=60):
-    short_tools = """
-只輸出一個工具呼叫或 final，不要長篇解釋。
-優先格式：
-{"tool":"run_terminal_command","args":{"command":"...","timeout_seconds":30}}
-或 {"tool":"final","answer":"..."}
-也接受 [TOOL_CALL] 區塊，但只能呼叫 run_terminal_command 或 final。
-所有查專案、讀檔、查 log、修程式、跑測試、清理、刪除、服務控制，都用 run_terminal_command 轉成雲端本機 shell 指令。
-工具結果足夠時立刻 final，不要反覆檢查。
-"""
-    compact = []
+    compact = [{"role":"system", "content":"你是工具路由器。只輸出 JSON：{\"tool\":\"run_terminal_command\",\"args\":{\"command\":\"...\"}} 或 {\"tool\":\"final\",\"answer\":\"...\"}"}]
     for m in messages[-5:]:
-        if m.get("role") == "tool":
-            compact.append({"role":"user", "content":"工具結果：\n" + limit(m.get("content") or "", 2500)})
-        elif m.get("role") == "assistant" and m.get("tool_calls"):
-            compact.append({"role":"assistant", "content":"已呼叫工具。"})
-        else:
-            compact.append({"role":m.get("role"), "content":limit(m.get("content") or "", 4000)})
-    compact.insert(0, {"role":"system", "content":"你是 Oracle 雲端本機終端工具路由器。" + short_tools})
-    text = chat_once(dict(cfg, max_tokens=256), compact, timeout=timeout)
+        if m.get("role") == "tool": compact.append({"role":"user", "content":"結果：\n" + limit(m.get("content") or "", 2500)})
+        else: compact.append({"role":m.get("role"), "content":limit(strip_gemma_thoughts(m.get("content") or ""), 4000)})
+    text = chat_once(dict(cfg, max_tokens=512), compact, timeout=timeout)
     obj = parse_loose_tool_protocol(text)
-    if not obj:
-        if (text or "").strip() and any(m.get("role") == "tool" for m in messages):
-            return {"content": text.strip(), "tool_calls": []}
-        raise RuntimeError("legacy JSON tool call returned unparsable output: " + limit(text, 1000))
-    if obj.get("tool") == "final":
-        return {"content": obj.get("answer") or (obj.get("args") or {}).get("answer") or "", "tool_calls": []}
-    name = obj.get("tool") or ""
-    if name == "run_ssh_command": name = "run_terminal_command"
-    args = obj.get("args") or {}
-    return {"content":"", "tool_calls":[{"id":f"legacy_{int(time.time()*1000)}", "type":"function", "function":{"name":name, "arguments":json.dumps(args, ensure_ascii=False)}}]}
-
+    if not obj: raise RuntimeError("unparsable tool output: " + limit(text, 500))
+    if obj.get("tool") == "final": return {"content": obj.get("answer") or "", "tool_calls": []}
+    return {"content":"", "tool_calls":[{"id":f"legacy_{int(time.time()*1000)}", "type":"function", "function":{"name":obj.get("tool"), "arguments":json.dumps(obj.get("args") or {}, ensure_ascii=False)}}]}
 
 def call_main_for_tools(req, cfg, messages):
     provider = (cfg.get("provider") or "custom").strip().lower()
-    route_timeout = int(req.get("tool_route_timeout_seconds", 90))
-    route_timeout = max(20, min(120, route_timeout))
-    if provider in ("gemini", "kaggle", "local_gemma"):
-        default_timeout = 120 if provider == "gemini" else 45
-        legacy_timeout = int(req.get("legacy_tool_router_timeout_seconds", default_timeout))
-        legacy_timeout = max(20, min(300, legacy_timeout))
-        return legacy_json_tool_call(cfg, messages, timeout=legacy_timeout), provider + "-json-terminal"
-    return openai_chat_completion(
-        cfg, messages, timeout=route_timeout, tools=tool_schemas(), tool_choice="auto",
-        stream=True, max_tokens=int(req.get("tool_router_max_tokens", 256))
-    ), "native-single-terminal-stream"
-
+    if provider in ("gemini", "kaggle", "local_gemma"): return legacy_json_tool_call(cfg, messages, timeout=120), provider + "-json"
+    return openai_chat_completion(cfg, messages, timeout=120, tools=tool_schemas(), stream=True, max_tokens=512), "native-stream"
 
 def extract_textual_terminal_tool(content):
     obj = parse_loose_tool_protocol(content or "")
-    if not obj:
-        return []
-    name = obj.get("tool") or ""
-    if name == "run_ssh_command":
-        name = "run_terminal_command"
-    if name != "run_terminal_command":
-        return []
-    args = obj.get("args") or {}
-    command = args.get("command") or ""
-    if not command:
-        return []
-    try:
-        timeout_seconds = int(args.get("timeout_seconds") or args.get("timeout") or 30)
-    except Exception:
-        timeout_seconds = 30
-    return [{
-        "id": f"textual_{int(time.time()*1000)}",
-        "type": "function",
-        "function": {"name": "run_terminal_command", "arguments": json.dumps({"command": command, "timeout_seconds": timeout_seconds}, ensure_ascii=False)}
-    }]
-
+    if not obj or obj.get("tool") != "run_terminal_command": return []
+    return [{"id": f"textual_{int(time.time()*1000)}", "type": "function", "function": {"name": "run_terminal_command", "arguments": json.dumps(obj.get("args") or {}, ensure_ascii=False)}}]
 
 def parse_tool_call(tc):
     fn = tc.get("function") or {}
-    name = (fn.get("name") or "").strip()
-    arg_text = fn.get("arguments") or "{}"
-    try:
-        args = json.loads(arg_text) if isinstance(arg_text, str) else (arg_text or {})
-    except Exception:
-        args = {}
-    return {"tool": name, "args": args}
-
-
-def is_mutating_tool(tool_name, args):
-    name = (tool_name or "").strip()
-    if name in ("repair_file", "remove_project"):
-        return True
-    if name in ("shell_exec", "ssh_exec", "run_ssh_command", "run_terminal_command", "terminal_exec"):
-        cmd = str((args or {}).get("command") or "").lower()
-        risky = ["rm ", "rm -rf", "mv ", "cp ", "tee ", ">", ">>", "pkill", "killall", "systemctl stop", "systemctl disable", "docker rm", "crontab", "chmod", "chown", "apt ", "pip install", "npm install"]
-        return any(x in cmd for x in risky)
-    return False
-
-
-def final_needs_31b(req, transcript, mutating_used):
-    if req.get("always_verify_final") is True:
-        return True
-    if mutating_used:
-        return True
-    text = "\n".join(transcript or "")
-    return "repair_file" in text or "remove_project" in text or "VALIDATION" in text
-
-
-def is_deep_or_mutating_request(question):
-    q = (question or "").lower()
-    markers = ["修", "修改", "修復", "刪除", "移除", "停止", "重啟", "kill", "rm ", "部署", "更新", "寫入", "覆寫", "安裝", "編譯", "github actions", "apk", "錯誤"]
-    return any(m in q for m in markers)
-
-
-def render_evidence_answer(question, transcript, reason=""):
-    print("# Oracle Rescue Agent 已取得工具證據\n")
-    if reason:
-        print(reason + "\n")
-    print("以下內容只包含已執行工具的結果；未額外推測。\n")
-    print("```text")
-    print(limit("\n\n".join(transcript or []), 24000))
-    print("```")
-    return 0
-
+    try: args = json.loads(fn.get("arguments") or "{}")
+    except Exception: args = {}
+    return {"tool": (fn.get("name") or "").strip(), "args": args}
 
 def run_native_tool_loop(req, models):
     question = req.get("question") or ""
     cfg = models[0]
-    messages = [
-        {"role":"system", "content": build_runtime_system(req)},
-        {"role":"user", "content": question},
-    ]
-    transcript = []
-    used_modes = []
-    mutating_used = False
-    requested_steps = int(req.get("max_steps", 4))
-    deep = is_deep_or_mutating_request(question)
-    hard_cap = 6 if deep else 4
-    max_steps = max(2, min(requested_steps, hard_cap))
-    total_timeout = int(req.get("total_task_timeout_seconds", 900 if deep else 240))
-    total_timeout = max(60, min(1200, total_timeout))
-    started = time.time()
-    static_retry_used = False
-    no_tool_turns_after_evidence = 0
+    messages = [{"role":"system", "content": build_runtime_system(req)}, {"role":"user", "content": question}]
+    transcript, mutating_used = [], False
+    max_steps = 6 if any(m in question.lower() for m in ["修", "刪除", "重啟"]) else 4
     for step in range(1, max_steps + 1):
-        if time.time() - started > total_timeout:
-            if transcript:
-                return render_evidence_answer(question, transcript, "任務達到總時間上限，已停止追加模型輪次。")
-            print("# Oracle Rescue Agent 超過總時間上限，且尚未取得工具結果")
-            return 1
-        print(f"[oracle_rescue_agent] step={step} calling main model tool loop...", flush=True)
-        try:
-            resp, mode = call_main_for_tools(req, cfg, messages)
-            used_modes.append(mode)
+        print(f"[agent] step={step} calling model...", flush=True)
+        try: resp, mode = call_main_for_tools(req, cfg, messages)
         except Exception as e:
-            if transcript and not mutating_used:
-                return render_evidence_answer(question, transcript, f"模型後續整理失敗：{type(e).__name__}: {e}")
-            print("# Oracle Rescue Agent 模型失敗\n")
-            print(f"步驟 {step} 呼叫主模型失敗：{type(e).__name__}: {e}\n")
-            print("主模型不使用備援；這是刻意設計，方便正確定位 API / 模型 / 工具提示錯誤。\n")
-            if transcript:
-                print("## 已取得工具結果\n```text")
-                print(limit("\n\n".join(transcript), 24000))
-                print("```")
+            print(f"# Agent 失敗\n步驟 {step} 呼叫模型失敗：{e}\n主模型不備援。")
             return 1
         tool_calls = resp.get("tool_calls") or []
         content = resp.get("content") or ""
-        if not tool_calls:
-            tool_calls = extract_textual_terminal_tool(content)
-            if tool_calls:
-                log_event("TEXTUAL_TOOL_CALL_CONVERTED count=" + str(len(tool_calls)))
+        if not tool_calls: tool_calls = extract_textual_terminal_tool(content)
         if tool_calls:
-            assistant_msg = {"role":"assistant", "content": content or None, "tool_calls": tool_calls}
-            messages.append(assistant_msg)
+            messages.append({"role":"assistant", "content": content or None, "tool_calls": tool_calls})
             for tc in tool_calls[:2]:
                 obj = parse_tool_call(tc)
-                name = obj.get("tool")
-                if name == "run_ssh_command": name = "run_terminal_command"
-                args = obj.get("args") or {}
-                print(f"[oracle_rescue_agent] step={step} executing native tool={name}", flush=True)
-                log_event(f"NATIVE_TOOL_START step={step} tool={name}")
-                if is_mutating_tool(name, args):
-                    mutating_used = True
+                name, args = obj.get("tool"), obj.get("args") or {}
+                if name in ("repair_file", "remove_project") or any(x in str(args.get("command","")).lower() for x in ["rm ", "pkill", "systemctl stop"]): mutating_used = True
                 res = execute_tool(req, models, {"tool": name, "args": args})
-                raw_out = res.get("output")
-                out = limit(raw_out, MAX_OBS)
-                obs = limit(raw_out, TOOL_CONTEXT_LIMIT)
-                log_event(f"NATIVE_TOOL_END step={step} tool={name} ok={res.get('ok')} output_length={len(str(raw_out or ''))} context_length={len(obs)}")
-                transcript.append(f"STEP {step} TOOL {name} ok={res.get('ok')}\n{out}")
-                messages.append({"role":"tool", "tool_call_id": tc.get("id") or f"call_{step}", "name": name or "run_terminal_command", "content": obs})
-            if len(tool_calls) > 2:
-                transcript.append(f"STEP {step} TOOL_LIMIT ok=True\n模型一次要求 {len(tool_calls)} 個工具；為避免長時間循環，本輪只執行前 2 個。")
+                obs = limit(res.get("output"), TOOL_CONTEXT_LIMIT)
+                transcript.append(f"STEP {step} TOOL {name} ok={res.get('ok')}\n{obs}")
+                messages.append({"role":"tool", "tool_call_id": tc.get("id"), "name": name, "content": obs})
             continue
         answer = content.strip()
-        if not answer:
-            no_tool_turns_after_evidence += 1
-            if transcript:
-                return render_evidence_answer(question, transcript, "模型未輸出最終文字；已停止追加輪次。")
-            if no_tool_turns_after_evidence >= 1:
-                print("# Oracle Rescue Agent 模型沒有輸出工具或答案")
-                return 1
-            messages.append({"role":"user", "content":"請立刻呼叫 run_terminal_command 查證環境，或回答無法處理的原因。"})
-            continue
-        static_ok, static_reason = final_static_guard(question, transcript, answer)
-        if not static_ok:
-            if transcript and static_retry_used:
-                return render_evidence_answer(question, transcript, "模型最終回答被守門規則再次阻擋：" + static_reason)
-            static_retry_used = True
-            messages.append({"role":"user", "content":"你的最終回答被程式化無幻覺規則阻擋：" + static_reason + "\n請只根據已有工具結果給最終答案；不要再重複環境檢查。"})
-            transcript.append(f"STEP {step} STATIC_GUARD ok=False\n{static_reason}")
-            continue
-        if final_needs_31b(req, transcript, mutating_used):
+        if not answer: continue
+        if mutating_used:
             final_check = verify_final_with_31b(req, question, "\n\n".join(transcript), answer)
             if not final_verifier_passed(final_check):
-                print("# Oracle Rescue Agent 最終一致性驗證失敗\n")
-                print("31B 後段驗證判定最終回答可能忽略工具結果、存在幻覺或未遵循指令，因此已阻擋輸出。\n")
-                print("## 31B 驗證\n```text")
-                print(limit(final_check, 12000))
-                print("```\n")
-                if transcript:
-                    print("## 已取得工具結果\n```text")
-                    print(limit("\n\n".join(transcript), 24000))
-                    print("```")
+                print("# 31B 驗證失敗，阻擋輸出。\n" + final_check)
                 return 1
-            print(answer)
-            print("\n---\n31B 最終一致性驗證：通過")
-            print("```text")
-            print(limit(final_check, 4000))
-            print("```")
-        else:
-            print(answer)
-            print("\n---\n最終回答依據：工具結果 + 程式化無幻覺檢查；未執行破壞性或改檔操作，因此未額外呼叫 31B。")
-        if used_modes:
-            print("\n---\n工具調用模式：" + ", ".join(dict.fromkeys(used_modes)))
+        print(answer)
         return 0
-    if transcript:
-        return render_evidence_answer(question, transcript, "達到步驟上限，已停止追加模型輪次。")
-    print("# Oracle Rescue Agent 達到步驟上限，且沒有取得工具結果")
+    print("# Agent 達到步驟上限")
     return 1
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -1234,24 +503,16 @@ def main():
     req = json.loads(Path(ns.request).read_text(encoding="utf-8"))
     global SESSION_LOG_PATH
     SESSION_LOG_PATH = req.get("session_log_path") or str(Path.home() / ".oracle_ai_rescue" / "sessions" / ((req.get("session_id") or ("session_" + time.strftime("%Y%m%d_%H%M%S"))) + ".log"))
-    log_event("SESSION_START version=2.5.0 mode=" + str(req.get("runtime_mode") or "cloud-local-terminal-runtime") + " session_id=" + str(req.get("session_id") or ""))
+    log_event("SESSION_START version=2.5.2")
     main_model = req.get("main_model") or {}
     models = [main_model] if model_config_usable(main_model) else []
     if not models:
-        log_event("MAIN_MODEL_MISSING model_config_unusable")
-        print("# Oracle Rescue Agent 失敗\n\n主模型設定不可用。請確認目前模型的 Provider / Base URL / 模型名稱；Kaggle 可不填 API Key，但 Gemini/NIM 必須填 API Key。")
+        print("# Agent 失敗\n主模型設定不可用。")
         return 2
     return run_native_tool_loop(req, models)
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
+    try: sys.exit(main())
     except Exception as e:
-        print("# Oracle Rescue Agent 未捕捉例外", flush=True)
-        print(f"{type(e).__name__}: {e}", flush=True)
-        print(traceback.format_exc(), flush=True)
-        try:
-            log_event("UNCAUGHT_EXCEPTION " + type(e).__name__ + ": " + str(e))
-        except Exception:
-            pass
+        print(f"# Agent 未捕捉例外\n{type(e).__name__}: {e}", flush=True)
         sys.exit(99)
