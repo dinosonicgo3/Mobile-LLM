@@ -35,29 +35,68 @@ class LlmClient {
 
         JSONArray arr = new JSONArray();
         for (ChatMessage m : messages) arr.put(new JSONObject().put("role", m.role).put("content", m.content));
+        
         JSONObject payload = new JSONObject()
             .put("model", settings.modelName)
             .put("messages", arr)
             .put("temperature", settings.temperature)
             .put("max_tokens", 4096);
 
+        boolean isGemini = "gemini".equals(settings.provider);
+
         // Google Gemini / Gemma over Gemini OpenAI-compatible API:
         // 使用官方 reasoning_effort 參數啟用 thinking，但不請求 thought summaries。
-        if ("gemini".equals(settings.provider)) {
+        if (isGemini) {
             String effort = settings.geminiReasoningEffort == null ? "high" : settings.geminiReasoningEffort.trim();
-            if (effort.length() > 0 && !"default".equalsIgnoreCase(effort)) payload.put("reasoning_effort", effort);
+            if (effort.length() > 0 && !"default".equalsIgnoreCase(effort) && !"none".equalsIgnoreCase(effort)) {
+                payload.put("reasoning_effort", effort);
+            }
         }
 
+        Exception lastException = null;
+
+        // 嘗試 1: 原始參數
         try {
             return executeChatRequest(settings, payload);
         } catch (RuntimeException e) {
-            // 某些 Google 模型或代理端點若尚未支援 reasoning_effort，避免整體聊天故障，退回不帶 thinking 參數重試。
-            if ("gemini".equals(settings.provider) && payload.has("reasoning_effort") && e.getMessage() != null && e.getMessage().contains("HTTP 400")) {
-                payload.remove("reasoning_effort");
-                return executeChatRequest(settings, payload);
+            lastException = e;
+            // 針對 Google API 的 400 / 500 錯誤進行智能降級與參數修正
+            if (isGemini && isBadRequestOrServerError(e)) {
+                
+                // 嘗試 2: 保留思考模式，但修正 max_tokens 與 temperature (Google API 常見 500 原因)
+                JSONObject fallbackPayload = new JSONObject(payload.toString());
+                if (fallbackPayload.has("reasoning_effort")) {
+                    // 思考模式下，某些模型不支援自訂 temperature，移除它避免 500
+                    fallbackPayload.remove("temperature");
+                    // 思考模式會消耗大量 token，4096 可能導致後端 OOM 500，改用 max_completion_tokens 並加大
+                    fallbackPayload.remove("max_tokens");
+                    fallbackPayload.put("max_completion_tokens", 8192);
+                    
+                    try {
+                        return executeChatRequest(settings, fallbackPayload);
+                    } catch (RuntimeException e2) {
+                        lastException = e2;
+                    }
+                }
+                
+                // 嘗試 3: 如果還是 500，可能是該端點暫時不支援 reasoning_effort，移除它作為最後手段
+                if (fallbackPayload.has("reasoning_effort")) {
+                    fallbackPayload.remove("reasoning_effort");
+                    try {
+                        return executeChatRequest(settings, fallbackPayload);
+                    } catch (RuntimeException e3) {
+                        lastException = e3;
+                    }
+                }
             }
-            throw e;
         }
+
+        throw lastException != null ? (Exception) lastException : new RuntimeException("未知錯誤");
+    }
+
+    private boolean isBadRequestOrServerError(RuntimeException e) {
+        String msg = e.getMessage();
+        return msg != null && (msg.contains("HTTP 400") || msg.contains("HTTP 500") || msg.contains("HTTP 502") || msg.contains("HTTP 503"));
     }
 
     private String executeChatRequest(ModelSettings settings, JSONObject payload) throws Exception {
